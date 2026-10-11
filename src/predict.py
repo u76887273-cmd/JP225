@@ -31,17 +31,16 @@ FEE = 15.0 # Broker spread adjustment
 # ------------------------------------------------------------
 # DATABASE CONNECTION & SCHEMA VERIFICATION
 # ------------------------------------------------------------
-# Using the modern psycopg 3 connection context manager
 try:
     conn = psycopg.connect(DATABASE_URL)
-    conn.autocommit = True  # Ensures transactions are committed instantly
+    conn.autocommit = True 
 except Exception as e:
     print(f"Database connection failed: {e}")
     sys.exit(1)
 
 cur = conn.cursor()
 
-# Ensure the log table exists in Postgres (Supabase)
+# Ensure the log table exists in Postgres
 cur.execute("""
 CREATE TABLE IF NOT EXISTS supreme_grid_log (
     id SERIAL PRIMARY KEY,
@@ -58,8 +57,8 @@ CREATE TABLE IF NOT EXISTS supreme_grid_log (
 """)
 
 print("Fetching recent market data...")
-# Fetch recent bars to calculate RSI dynamically
-cur.execute("SELECT * FROM features_m5 ORDER BY timestamp DESC LIMIT 30;")
+# Increased to 200 so moving averages (ema50, atr50) have room to calculate!
+cur.execute("SELECT * FROM features_m5 ORDER BY timestamp DESC LIMIT 200;")
 columns = [desc[0] for desc in cur.description]
 data = cur.fetchall()
 
@@ -71,13 +70,72 @@ bars = pd.DataFrame(data, columns=columns)
 bars["timestamp"] = pd.to_datetime(bars["timestamp"], utc=True)
 bars = bars.sort_values("timestamp").reset_index(drop=True)
 
-# Calculate RSI on the fly
+# ------------------------------------------------------------
+# DYNAMIC FEATURE ENGINEERING (MATCHING COLAB)
+# ------------------------------------------------------------
+print("Engineering advanced features for AI...")
+
+# Returns
+bars['return_1'] = bars['close'].pct_change(1) * 100
+bars['return_3'] = bars['close'].pct_change(3) * 100
+bars['return_6'] = bars['close'].pct_change(6) * 100
+
+# Candle shapes
+bars['body'] = bars['close'] - bars['open']
+bars['upper_wick'] = bars['high'] - bars[['open', 'close']].max(axis=1)
+bars['lower_wick'] = bars[['open', 'close']].min(axis=1) - bars['low']
+
+# EMAs
+bars['ema20'] = bars['close'].ewm(span=20, adjust=False).mean()
+bars['ema50'] = bars['close'].ewm(span=50, adjust=False).mean()
+bars['ema_gap'] = bars['ema20'] - bars['ema50']
+bars['ema20_slope'] = bars['ema20'].diff()
+
+# ATRs
+bars['prev_close'] = bars['close'].shift(1)
+bars['tr1'] = bars['high'] - bars['low']
+bars['tr2'] = (bars['high'] - bars['prev_close']).abs()
+bars['tr3'] = (bars['low'] - bars['prev_close']).abs()
+bars['tr'] = bars[['tr1', 'tr2', 'tr3']].max(axis=1)
+bars['atr14'] = bars['tr'].rolling(14).mean()
+bars['atr50'] = bars['tr'].rolling(50).mean()
+bars['relative_atr'] = bars['atr14'] / bars['atr50']
+
+# RSI 14 (Your original code)
 delta = bars["close"].diff()
 gain = delta.clip(lower=0).rolling(14).mean()
 loss = (-delta.clip(upper=0)).rolling(14).mean()
 rs = gain / loss.replace(0, np.nan)
 bars["rsi14"] = 100 - (100 / (1 + rs))
 
+# VWAP (Daily Reset)
+bars['date'] = bars['timestamp'].dt.date
+bars['typical_price'] = (bars['high'] + bars['low'] + bars['close']) / 3
+bars['vwap'] = bars.groupby('date').apply(
+    lambda x: (x['typical_price'] * x['volume']).cumsum() / x['volume'].cumsum()
+).reset_index(level=0, drop=True)
+bars['vwap_distance'] = bars['close'] - bars['vwap']
+
+# Opening Range (OR) - Using first 1 hour (12 M5 bars) of the day
+or_df = bars.groupby('date').head(12).groupby('date').agg({
+    'high': 'max', 'low': 'min', 'open': 'first'
+})
+bars['opening_high'] = bars['date'].map(or_df['high'])
+bars['opening_low'] = bars['date'].map(or_df['low'])
+bars['opening_open'] = bars['date'].map(or_df['open'])
+
+bars['dist_or_high'] = bars['close'] - bars['opening_high']
+bars['dist_or_low'] = bars['close'] - bars['opening_low']
+bars['dist_open_price'] = bars['close'] - bars['opening_open']
+bars['inside_or'] = ((bars['close'] < bars['opening_high']) & (bars['close'] > bars['opening_low'])).astype(int)
+
+# Sessions
+hour = bars['timestamp'].dt.hour
+bars['tokyo'] = ((hour >= 0) & (hour < 8)).astype(int)
+bars['london'] = ((hour >= 8) & (hour < 16)).astype(int)
+bars['newyork'] = ((hour >= 13) & (hour < 21)).astype(int)
+
+# Get the most recent row after calculating all rolling features
 latest = bars.iloc[-1:]
 
 # ------------------------------------------------------------
@@ -101,21 +159,19 @@ pred_downside = float(downside_model.predict(X)[0])
 pred_width    = float(width_model.predict(X)[0])
 
 # ------------------------------------------------------------
-# PROJECT ALL ZONES (To print in the map regardless of signal)
+# PROJECT ALL ZONES
 # ------------------------------------------------------------
 proj_high = price + pred_upside
 proj_low  = price - pred_downside
 midline = (proj_high + proj_low) / 2
 zone_height = pred_width * 0.15
 
-# Calculate Theoretical BUY Zone
 buy_zone_bottom = proj_low - FEE
 buy_zone_top = (proj_low + zone_height) - FEE
 buy_zone_str = f"{buy_zone_bottom:.1f} to {buy_zone_top:.1f}"
 buy_limit = buy_zone_top
 buy_tp = midline
 
-# Calculate Theoretical SELL Zone
 sell_zone_bottom = proj_high - zone_height
 sell_zone_top = proj_high
 sell_zone_str = f"{sell_zone_bottom:.1f} to {sell_zone_top:.1f}"
@@ -123,7 +179,7 @@ sell_limit = sell_zone_bottom
 sell_tp = midline - FEE
 
 # ------------------------------------------------------------
-# RAW SIGNAL GENERATION (1.5x Conviction + RSI)
+# RAW SIGNAL GENERATION 
 # ------------------------------------------------------------
 raw_signal = "WAIT"
 
@@ -140,7 +196,6 @@ reason = "Autonomous Grid Execution" if raw_signal != "WAIT" else "Not enough AI
 blocked_reason = None
 elapsed_hours = 0.0
 
-# Fetch active/pending trades from Supabase (using pandas with the psycopg connection)
 try:
     active_df = pd.read_sql("SELECT * FROM supreme_grid_log WHERE status IN ('PENDING', 'OPEN') ORDER BY timestamp", conn)
     num_open = len(active_df)
