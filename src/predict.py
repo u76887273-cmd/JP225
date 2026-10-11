@@ -101,7 +101,7 @@ bars['atr14'] = bars['tr'].rolling(14).mean()
 bars['atr50'] = bars['tr'].rolling(50).mean()
 bars['relative_atr'] = bars['atr14'] / bars['atr50']
 
-# RSI 14 (Your original code)
+# RSI 14
 delta = bars["close"].diff()
 gain = delta.clip(lower=0).rolling(14).mean()
 loss = (-delta.clip(upper=0)).rolling(14).mean()
@@ -111,9 +111,12 @@ bars["rsi14"] = 100 - (100 / (1 + rs))
 # VWAP (Daily Reset)
 bars['date'] = bars['timestamp'].dt.date
 bars['typical_price'] = (bars['high'] + bars['low'] + bars['close']) / 3
-bars['vwap'] = bars.groupby('date').apply(
-    lambda x: (x['typical_price'] * x['volume']).cumsum() / x['volume'].cumsum()
-).reset_index(level=0, drop=True)
+
+# Safe VWAP calculation avoiding the apply() ValueError
+cum_vp = (bars['typical_price'] * bars['volume']).groupby(bars['date']).cumsum()
+cum_v = bars['volume'].groupby(bars['date']).cumsum()
+bars['vwap'] = cum_vp / cum_v
+
 bars['vwap_distance'] = bars['close'] - bars['vwap']
 
 # Opening Range (OR) - Using first 1 hour (12 M5 bars) of the day
