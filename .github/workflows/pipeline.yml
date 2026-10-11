@@ -18,8 +18,8 @@ python-version: '3.10'
 cache: 'pip'
 - name: Install Dependencies
 run: pip install -r requirements.txt
-# - name: 1. Fetch Live Market Data (cTrader)
-#   run: python src/data.py
+- name: 1. Fetch Live Market Data (cTrader)
+run: python src/data.py
 - name: 2. Run AI Prediction Engine
 run: python src/predict.py
 - name: 3. Run Grid State Validator
