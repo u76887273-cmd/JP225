@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JP225 Quantum Supreme</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #0f172a; color: #f8fafc; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+        .glass { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.1); }
+        .glow-text { text-shadow: 0 0 10px rgba(56, 189, 248, 0.5); }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col items-center p-4 sm:p-8">
+
+    <div class="max-w-2xl w-full">
+        <!-- Header -->
+        <div class="text-center mb-8">
+            <h1 class="text-3xl font-bold text-sky-400 glow-text mb-2">JP225 QUANTUM SUPREME</h1>
+            <p class="text-slate-400">Autonomous Cloud Grid Engine</p>
+            <div id="connection-status" class="mt-2 text-xs font-mono text-yellow-400">Connecting to database...</div>
+        </div>
+
+        <!-- Dashboard Grid -->
+        <div class="glass rounded-2xl p-6 shadow-2xl space-y-6">
+            
+            <!-- Top Stats -->
+            <div class="grid grid-cols-2 gap-4 border-b border-slate-700 pb-6">
+                <div>
+                    <p class="text-sm text-slate-400 uppercase tracking-wide">Latest Update (UTC)</p>
+                    <p id="time-val" class="text-lg font-mono font-semibold">--</p>
+                </div>
+                <div>
+                    <p class="text-sm text-slate-400 uppercase tracking-wide">Current Price</p>
+                    <p id="price-val" class="text-2xl font-mono font-bold text-white">--</p>
+                </div>
+            </div>
+
+            <!-- Signal Area -->
+            <div class="text-center py-6 bg-slate-800/50 rounded-xl border border-slate-700">
+                <p class="text-sm text-slate-400 uppercase tracking-widest mb-2">Final AI Signal</p>
+                <h2 id="signal-val" class="text-5xl font-extrabold tracking-tight text-white mb-2">WAIT</h2>
+                <p id="reason-val" class="text-sm text-slate-400">Waiting for data...</p>
+            </div>
+
+            <!-- Trade Zones -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div class="bg-emerald-900/20 border border-emerald-800/50 rounded-xl p-4 text-center">
+                    <p class="text-xs text-emerald-400 uppercase tracking-wider mb-1">Buy Limits</p>
+                    <p id="buy-zone" class="font-mono text-emerald-100">--</p>
+                </div>
+                <div class="bg-rose-900/20 border border-rose-800/50 rounded-xl p-4 text-center">
+                    <p class="text-xs text-rose-400 uppercase tracking-wider mb-1">Sell Limits</p>
+                    <p id="sell-zone" class="font-mono text-rose-100">--</p>
+                </div>
+            </div>
+            
+            <!-- Target -->
+            <div class="text-center pt-4">
+                <p class="text-xs text-sky-400 uppercase tracking-wider mb-1">Equilibrium Target (TP)</p>
+                <p id="tp-val" class="font-mono text-lg text-sky-100">--</p>
+            </div>
+        </div>
+
+        <div class="text-center mt-8">
+            <button onclick="fetchData()" class="px-6 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-full font-semibold transition-colors shadow-[0_0_15px_rgba(2,132,199,0.5)]">
+                Refresh Data
+            </button>
+        </div>
+    </div>
+
+    <script>
+        // =========================================================
+        // SETUP: ADD YOUR SUPABASE DETAILS HERE
+        // =========================================================
+        const SUPABASE_URL = "https://gtezyactopcdfeyiyrzz.supabase.co"; 
+        const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd0ZXp5YWN0b3BjZGZleWl5cnp6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE2ODE5MzcsImV4cCI6MjEwNzI1NzkzN30.o1lNY8NKe86xhTBxw0bzYGRYkZBigfyO2iE6f-Z5dJU";
+
+        async function fetchData() {
+            const statusEl = document.getElementById('connection-status');
+            statusEl.innerText = "Fetching latest signal...";
+            statusEl.className = "mt-2 text-xs font-mono text-yellow-400";
+
+            try {
+                // Fetch the absolute newest row from the database
+                const response = await fetch(`${SUPABASE_URL}/rest/v1/supreme_grid_log?select=*&order=timestamp.desc&limit=1`, {
+                    headers: {
+                        'apikey': SUPABASE_ANON_KEY,
+                        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+                    }
+                });
+
+                if (!response.ok) throw new Error("Failed to connect");
+                
+                const data = await response.json();
+                
+                if (data.length > 0) {
+                    const row = data[0];
+                    
+                    // Format Time
+                    const date = new Date(row.timestamp);
+                    document.getElementById('time-val').innerText = date.toLocaleString();
+                    
+                    document.getElementById('price-val').innerText = row.price.toFixed(1);
+                    document.getElementById('reason-val').innerText = row.reason || "Autonomous Execution";
+                    
+                    // Color code the signal
+                    const sigEl = document.getElementById('signal-val');
+                    sigEl.innerText = row.signal;
+                    if (row.signal === "BUY") sigEl.className = "text-5xl font-extrabold tracking-tight text-emerald-400 mb-2 glow-text";
+                    else if (row.signal === "SELL") sigEl.className = "text-5xl font-extrabold tracking-tight text-rose-400 mb-2 glow-text";
+                    else sigEl.className = "text-5xl font-extrabold tracking-tight text-slate-300 mb-2";
+
+                    // Update Zones
+                    const zoneText = row.entry_zone || "-";
+                    if (zoneText.includes("|")) {
+                        // WAIT signal format "B: 123 | S: 456"
+                        const parts = zoneText.split("|");
+                        document.getElementById('buy-zone').innerText = parts[0].replace("B:", "").trim();
+                        document.getElementById('sell-zone').innerText = parts[1].replace("S:", "").trim();
+                    } else if (row.signal === "BUY") {
+                        document.getElementById('buy-zone').innerText = zoneText;
+                        document.getElementById('sell-zone').innerText = "WAITING";
+                    } else if (row.signal === "SELL") {
+                        document.getElementById('buy-zone').innerText = "WAITING";
+                        document.getElementById('sell-zone').innerText = zoneText;
+                    }
+
+                    document.getElementById('tp-val').innerText = row.take_profit ? row.take_profit.toFixed(1) : "--";
+
+                    statusEl.innerText = "Live Dashboard Active - Connected";
+                    statusEl.className = "mt-2 text-xs font-mono text-emerald-400";
+                }
+            } catch (error) {
+                console.error(error);
+                statusEl.innerText = "Error connecting to Supabase. Check URL/Key.";
+                statusEl.className = "mt-2 text-xs font-mono text-rose-500";
+            }
+        }
+
+        // Run immediately on load
+        fetchData();
+        // Auto refresh every 5 minutes
+        setInterval(fetchData, 300000);
+    </script>
+</body>
+</html> CC
