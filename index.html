@@ -101,7 +101,7 @@
                     const date = new Date(row.timestamp);
                     document.getElementById('time-val').innerText = date.toLocaleString();
                     
-                    document.getElementById('price-val').innerText = row.price.toFixed(1);
+                    document.getElementById('price-val').innerText = row.price.toFixed(0);
                     document.getElementById('reason-val').innerText = row.reason || "Autonomous Execution";
                     
                     // Color code the signal
@@ -126,7 +126,7 @@
                         document.getElementById('sell-zone').innerText = zoneText;
                     }
 
-                    document.getElementById('tp-val').innerText = row.take_profit ? row.take_profit.toFixed(1) : "--";
+                    document.getElementById('tp-val').innerText = row.take_profit ? row.take_profit.toFixed(0) : "--";
 
                     statusEl.innerText = "Live Dashboard Active - Connected";
                     statusEl.className = "mt-2 text-xs font-mono text-emerald-400";
