@@ -245,7 +245,7 @@ if signal == "BUY":
 elif signal == "SELL":
     chart_zone, chart_entry, chart_tp = sell_zone_str, sell_limit, sell_tp
 else:
-    chart_zone = f"B: {buy_limit:.1f} | S: {sell_limit:.1f}"
+    chart_zone = f"B: {buy_zone_str} | S: {sell_zone_str}"
     chart_entry = "-" 
     chart_tp = midline
 
