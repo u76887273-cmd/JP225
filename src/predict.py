@@ -171,13 +171,13 @@ zone_height = pred_width * 0.15
 
 buy_zone_bottom = proj_low - FEE
 buy_zone_top = (proj_low + zone_height) - FEE
-buy_zone_str = f"{buy_zone_bottom:.1f} to {buy_zone_top:.1f}"
+buy_zone_str = f"{buy_zone_bottom:.0f} to {buy_zone_top:.0f}"
 buy_limit = buy_zone_top
 buy_tp = midline
 
 sell_zone_bottom = proj_high - zone_height
 sell_zone_top = proj_high
-sell_zone_str = f"{sell_zone_bottom:.1f} to {sell_zone_top:.1f}"
+sell_zone_str = f"{sell_zone_bottom:.0f} to {sell_zone_top:.0f}"
 sell_limit = sell_zone_bottom
 sell_tp = midline - FEE
 
