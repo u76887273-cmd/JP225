@@ -7,8 +7,7 @@ import numpy as np
 from datetime import datetime, timezone
 
 # ============================================================
-# JAPAN225 QUANTUM SUPREME — LIVE PREDICTION ENGINE
-# THE "GOD MODE" GRID: MAX 5 TRADES + 4/8/16/32h DELAYS + ATR 5.0
+# QUANTUM SUPREME — LIVE PREDICTION ENGINE (NO DEFENSE BLOCKS)
 # ============================================================
 
 # Database connection from GitHub Secrets
@@ -20,13 +19,8 @@ if not DATABASE_URL:
 # Paths for GitHub Actions runner
 MODEL_DIR = "models"
 
-# ------------------------------------------------------------
-# GRID MACRO SETTINGS
-# ------------------------------------------------------------
-MAX_OPEN_TRADES = 5
-ATR_MULTIPLIER = 5.0
-TIME_DELAYS_HOURS = [4, 8, 16, 32] 
-FEE = 15.0 # Broker spread adjustment
+# Broker spread adjustment
+FEE = 15.0 
 
 # ------------------------------------------------------------
 # DATABASE CONNECTION & SCHEMA VERIFICATION
@@ -57,7 +51,6 @@ CREATE TABLE IF NOT EXISTS supreme_grid_log (
 """)
 
 print("Fetching recent market data...")
-# Increased to 200 so moving averages (ema50, atr50) have room to calculate!
 cur.execute("SELECT * FROM features_m5 ORDER BY timestamp DESC LIMIT 200;")
 columns = [desc[0] for desc in cur.description]
 data = cur.fetchall()
@@ -71,7 +64,7 @@ bars["timestamp"] = pd.to_datetime(bars["timestamp"], utc=True)
 bars = bars.sort_values("timestamp").reset_index(drop=True)
 
 # ------------------------------------------------------------
-# DYNAMIC FEATURE ENGINEERING (MATCHING COLAB)
+# DYNAMIC FEATURE ENGINEERING
 # ------------------------------------------------------------
 print("Engineering advanced features for AI...")
 
@@ -108,18 +101,17 @@ loss = (-delta.clip(upper=0)).rolling(14).mean()
 rs = gain / loss.replace(0, np.nan)
 bars["rsi14"] = 100 - (100 / (1 + rs))
 
-# VWAP (Daily Reset)
+# VWAP (Daily Reset) - SAFE CUMSUM METHOD
 bars['date'] = bars['timestamp'].dt.date
 bars['typical_price'] = (bars['high'] + bars['low'] + bars['close']) / 3
 
-# Safe VWAP calculation avoiding the apply() ValueError
 cum_vp = (bars['typical_price'] * bars['volume']).groupby(bars['date']).cumsum()
 cum_v = bars['volume'].groupby(bars['date']).cumsum()
 bars['vwap'] = cum_vp / cum_v
 
 bars['vwap_distance'] = bars['close'] - bars['vwap']
 
-# Opening Range (OR) - Using first 1 hour (12 M5 bars) of the day
+# Opening Range (OR)
 or_df = bars.groupby('date').head(12).groupby('date').agg({
     'high': 'max', 'low': 'min', 'open': 'first'
 })
@@ -138,7 +130,6 @@ bars['tokyo'] = ((hour >= 0) & (hour < 8)).astype(int)
 bars['london'] = ((hour >= 8) & (hour < 16)).astype(int)
 bars['newyork'] = ((hour >= 13) & (hour < 21)).astype(int)
 
-# Get the most recent row after calculating all rolling features
 latest = bars.iloc[-1:]
 
 # ------------------------------------------------------------
@@ -182,7 +173,7 @@ sell_limit = sell_zone_bottom
 sell_tp = midline - FEE
 
 # ------------------------------------------------------------
-# RAW SIGNAL GENERATION 
+# RAW SIGNAL GENERATION (PURE MATH & RSI ONLY)
 # ------------------------------------------------------------
 raw_signal = "WAIT"
 
@@ -192,50 +183,10 @@ elif pred_downside > (pred_upside * 1.5) and rsi > 35:
     raw_signal = "SELL"
 
 # ------------------------------------------------------------
-# THE GRID DEFENSE SYSTEM
+# THE GRID DEFENSE SYSTEM (CANCELED)
 # ------------------------------------------------------------
 signal = raw_signal
-reason = "Autonomous Grid Execution" if raw_signal != "WAIT" else "Not enough AI conviction (WAIT)"
-blocked_reason = None
-elapsed_hours = 0.0
-
-try:
-    active_df = pd.read_sql("SELECT * FROM supreme_grid_log WHERE status IN ('PENDING', 'OPEN') ORDER BY timestamp", conn)
-    num_open = len(active_df)
-except:
-    num_open = 0
-    active_df = pd.DataFrame()
-
-if raw_signal != "WAIT":
-    if num_open >= MAX_OPEN_TRADES:
-        signal = "WAIT"
-        blocked_reason = "MAX_5_OPEN_TRADES_HIT"
-        
-    elif num_open > 0:
-        active_df['timestamp'] = pd.to_datetime(active_df['timestamp'], utc=True)
-        last_trade_time = active_df['timestamp'].iloc[-1]
-        elapsed_hours = (time_stamp - last_trade_time).total_seconds() / 3600.0
-        
-        delay_idx = min(num_open - 1, len(TIME_DELAYS_HOURS) - 1)
-        req_hours = TIME_DELAYS_HOURS[delay_idx]
-        
-        if elapsed_hours < req_hours:
-            signal = "WAIT"
-            blocked_reason = f"TIME_DELAY (Needs {req_hours}h, Elapsed {elapsed_hours:.1f}h)"
-        else:
-            req_dist = atr * ATR_MULTIPLIER
-            too_close = False
-            for _, row in active_df.iterrows():
-                if abs(price - row['entry']) < req_dist:
-                    too_close = True
-                    break
-                    
-            if too_close:
-                signal = "WAIT"
-                blocked_reason = f"ATR_DISTANCE (Needs {req_dist:.1f} pts)"
-
-if blocked_reason:
-    reason = f"BLOCKED: {blocked_reason}"
+reason = "Autonomous Execution" if raw_signal != "WAIT" else "Not enough AI conviction (WAIT)"
 
 # ------------------------------------------------------------
 # ASSIGN FINAL VARIABLES FOR DATABASE
@@ -248,7 +199,6 @@ else:
     chart_zone = f"B: {buy_zone_str} | S: {sell_zone_str}"
     chart_entry = "-" 
     chart_tp = midline
-
 
 # ------------------------------------------------------------
 # INSERT INTO LOG (SUPABASE via psycopg3)
@@ -266,7 +216,7 @@ VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (timestamp) DO NOTHING;
 """, (
     ts,
-    round(price, 1),
+    round(price, 0),
     signal,
     reason,
     zone_val,
@@ -279,28 +229,55 @@ cur.close()
 conn.close()
 
 # ------------------------------------------------------------
-# REPORT
+# REPORT & TELEGRAM NOTIFICATION
 # ------------------------------------------------------------
 print("\n" + "="*64)
-print("JAPAN225 QUANTUM SUPREME — CLOUD GRID ENGINE")
+print("QUANTUM SUPREME — CLOUD ENGINE (DEFENSE OFF)")
 print("="*64)
 print(f"UTC Time : {time_stamp}")
-print(f"Current  : {price:.1f}")
-print(f"ATR (14) : {atr:.1f}")
+print(f"Current  : {price:.0f}")
+print(f"ATR (14) : {atr:.0f}")
 print(f"RSI (14) : {rsi:.1f}")
 print("-" * 64)
-print(f"Active Grid Positions : {num_open} / {MAX_OPEN_TRADES}")
-if num_open > 0:
-    print(f"Time Since Last Trade : {elapsed_hours:.1f} Hours")
-    print(f"Current Distance Req. : {atr * ATR_MULTIPLIER:.1f} pts")
+print(f"PROJECTED BUY ZONE  : {buy_zone_str} (Limit: {buy_limit:.0f})")
+print(f"PROJECTED SELL ZONE : {sell_zone_str} (Limit: {sell_limit:.0f})")
+print(f"EQUILIBRIUM TP      : {midline:.0f}")
 print("-" * 64)
-print(f"PROJECTED BUY ZONE  : {buy_zone_str} (Limit: {buy_limit if type(buy_limit) == str else round(buy_limit, 1)})")
-print(f"PROJECTED SELL ZONE : {sell_zone_str} (Limit: {sell_limit if type(sell_limit) == str else round(sell_limit, 1)})")
-print(f"EQUILIBRIUM TP      : {midline:.1f}")
-print("-" * 64)
-print(f"RAW AI SIGNAL : {raw_signal}")
 print(f"FINAL SIGNAL  : {signal}")
 print(f"REASON        : {reason}")
 if signal != "WAIT":
-    print(f">> EXECUTING LIMIT ORDER AT {chart_entry:.1f} <<")
+    print(f">> EXECUTING LIMIT ORDER AT {chart_entry:.0f} <<")
 print("="*64)
+
+# Grab Telegram credentials from GitHub Secrets
+bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+
+if bot_token and chat_id and signal in ["BUY", "SELL"]:
+    import urllib.request
+    import urllib.parse
+    
+    msg = f"🦅 *QUANTUM SUPREME*\n"
+    msg += f"========================\n"
+    msg += f"💰 *Current Price:* {price:.0f}\n"
+    msg += f"📊 *ATR:* {atr:.0f} | *RSI:* {rsi:.1f}\n\n"
+    
+    if signal == "BUY":
+        msg += f"🟢 *SIGNAL: BUY*\n"
+        msg += f"🎯 *LIMIT ENTRY:* {chart_entry:.0f}\n"
+        msg += f"🏁 *TAKE PROFIT:* {chart_tp:.0f}\n\n"
+        msg += f"📍 _Zone:_ {chart_zone}\n"
+    elif signal == "SELL":
+        msg += f"🔴 *SIGNAL: SELL*\n"
+        msg += f"🎯 *LIMIT ENTRY:* {chart_entry:.0f}\n"
+        msg += f"🏁 *TAKE PROFIT:* {chart_tp:.0f}\n\n"
+        msg += f"📍 _Zone:_ {chart_zone}\n"
+
+    try:
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        data = urllib.parse.urlencode({'chat_id': chat_id, 'text': msg, 'parse_mode': 'Markdown'}).encode('utf-8')
+        req = urllib.request.Request(url, data=data)
+        urllib.request.urlopen(req)
+        print("Telegram alert sent successfully!")
+    except Exception as e:
+        print(f"Failed to send Telegram alert: {e}")
