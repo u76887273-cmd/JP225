@@ -7,7 +7,7 @@ import numpy as np
 from datetime import datetime, timezone
 
 # ============================================================
-# QUANTUM SUPREME — LIVE PREDICTION ENGINE (NO DEFENSE BLOCKS)
+# QUANTUM SUPREME — LIVE PREDICTION ENGINE (UNLEASHED & CUSTOMIZED)
 # ============================================================
 
 # Database connection from GitHub Secrets
@@ -19,8 +19,8 @@ if not DATABASE_URL:
 # Paths for GitHub Actions runner
 MODEL_DIR = "models"
 
-# Broker spread adjustment
-FEE = 15.0 
+# Broker spread adjustment removed (set to 0.0)
+FEE = 0.0 
 
 # ------------------------------------------------------------
 # DATABASE CONNECTION & SCHEMA VERIFICATION
@@ -153,12 +153,12 @@ pred_downside = float(downside_model.predict(X)[0])
 pred_width    = float(width_model.predict(X)[0])
 
 # ------------------------------------------------------------
-# PROJECT ALL ZONES
+# PROJECT ALL ZONES (ZONE HEIGHT CHANGED TO 20%)
 # ------------------------------------------------------------
 proj_high = price + pred_upside
 proj_low  = price - pred_downside
 midline = (proj_high + proj_low) / 2
-zone_height = pred_width * 0.15
+zone_height = pred_width * 0.20
 
 buy_zone_bottom = proj_low - FEE
 buy_zone_top = (proj_low + zone_height) - FEE
@@ -173,20 +173,20 @@ sell_limit = sell_zone_bottom
 sell_tp = midline - FEE
 
 # ------------------------------------------------------------
-# RAW SIGNAL GENERATION (PURE MATH & RSI ONLY)
+# RAW SIGNAL GENERATION (1.5X AND RSI CONDITIONS REMOVED)
 # ------------------------------------------------------------
 raw_signal = "WAIT"
 
-if pred_upside > (pred_downside * 1.5) and rsi < 65:
+if pred_upside > pred_downside:
     raw_signal = "BUY"
-elif pred_downside > (pred_upside * 1.5) and rsi > 35:
+elif pred_downside > pred_upside:
     raw_signal = "SELL"
 
 # ------------------------------------------------------------
 # THE GRID DEFENSE SYSTEM (CANCELED)
 # ------------------------------------------------------------
 signal = raw_signal
-reason = "Autonomous Execution" if raw_signal != "WAIT" else "Not enough AI conviction (WAIT)"
+reason = "Autonomous Execution" if raw_signal != "WAIT" else "Equilibrium (WAIT)"
 
 # ------------------------------------------------------------
 # ASSIGN FINAL VARIABLES FOR DATABASE
@@ -232,7 +232,7 @@ conn.close()
 # REPORT & TELEGRAM NOTIFICATION
 # ------------------------------------------------------------
 print("\n" + "="*64)
-print("QUANTUM SUPREME — CLOUD ENGINE (DEFENSE OFF)")
+print("QUANTUM SUPREME — CLOUD ENGINE (MODIFIED RULES)")
 print("="*64)
 print(f"UTC Time : {time_stamp}")
 print(f"Current  : {price:.0f}")
