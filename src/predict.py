@@ -153,7 +153,7 @@ pred_downside = float(downside_model.predict(X)[0])
 pred_width    = float(width_model.predict(X)[0])
 
 # ------------------------------------------------------------
-# PROJECT ALL ZONES (ZONE HEIGHT CHANGED TO 20%)
+# PROJECT ALL ZONES (ZONE HEIGHT = 20%, FEE = 0.0)
 # ------------------------------------------------------------
 proj_high = price + pred_upside
 proj_low  = price - pred_downside
@@ -173,26 +173,20 @@ sell_limit = sell_zone_bottom
 sell_tp = midline - FEE
 
 # ------------------------------------------------------------
-# RAW SIGNAL GENERATION (0.6 DISTANCE FROM MIDLINE)
-# Example: midline=1500, upper=1600, lower=1400
-# buy_trigger  = 1500 - 0.6 * (1500 - 1400) = 1440 (BUY if price < 1440)
-# sell_trigger = 1500 + 0.6 * (1600 - 1500) = 1560 (SELL if price > 1560)
+# RAW SIGNAL GENERATION (PURE DIRECTIONAL / 0.6 RULE CANCELED)
 # ------------------------------------------------------------
 raw_signal = "WAIT"
 
-buy_trigger  = midline - (0.6 * (midline - proj_low))
-sell_trigger = midline + (0.6 * (proj_high - midline))
-
-if price < buy_trigger:
+if pred_upside > pred_downside:
     raw_signal = "BUY"
-elif price > sell_trigger:
+elif pred_downside > pred_upside:
     raw_signal = "SELL"
 
 # ------------------------------------------------------------
 # THE GRID DEFENSE SYSTEM (CANCELED)
 # ------------------------------------------------------------
 signal = raw_signal
-reason = "Autonomous Execution" if raw_signal != "WAIT" else "Price inside 0.6 midline zone (WAIT)"
+reason = "Autonomous Execution" if raw_signal != "WAIT" else "Equal upside and downside (WAIT)"
 
 # ------------------------------------------------------------
 # ASSIGN FINAL VARIABLES FOR DATABASE
@@ -238,15 +232,13 @@ conn.close()
 # REPORT & TELEGRAM NOTIFICATION
 # ------------------------------------------------------------
 print("\n" + "="*64)
-print("QUANTUM SUPREME — CLOUD ENGINE (0.6 MIDLINE RULE)")
+print("QUANTUM SUPREME — CLOUD ENGINE (UNLEASHED)")
 print("="*64)
 print(f"UTC Time : {time_stamp}")
 print(f"Current  : {price:.0f}")
 print(f"ATR (14) : {atr:.0f}")
 print(f"RSI (14) : {rsi:.1f}")
 print("-" * 64)
-print(f"BUY TRIGGER (<)     : {buy_trigger:.0f}")
-print(f"SELL TRIGGER (>)    : {sell_trigger:.0f}")
 print(f"PROJECTED BUY ZONE  : {buy_zone_str} (Limit: {buy_limit:.0f})")
 print(f"PROJECTED SELL ZONE : {sell_zone_str} (Limit: {sell_limit:.0f})")
 print(f"EQUILIBRIUM TP      : {midline:.0f}")
