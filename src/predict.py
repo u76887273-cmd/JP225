@@ -173,20 +173,26 @@ sell_limit = sell_zone_bottom
 sell_tp = midline - FEE
 
 # ------------------------------------------------------------
-# RAW SIGNAL GENERATION (1.5X AND RSI CONDITIONS REMOVED)
+# RAW SIGNAL GENERATION (0.6 DISTANCE FROM MIDLINE)
+# Example: midline=1500, upper=1600, lower=1400
+# buy_trigger  = 1500 - 0.6 * (1500 - 1400) = 1440 (BUY if price < 1440)
+# sell_trigger = 1500 + 0.6 * (1600 - 1500) = 1560 (SELL if price > 1560)
 # ------------------------------------------------------------
 raw_signal = "WAIT"
 
-if pred_upside > pred_downside:
+buy_trigger  = midline - (0.6 * (midline - proj_low))
+sell_trigger = midline + (0.6 * (proj_high - midline))
+
+if price < buy_trigger:
     raw_signal = "BUY"
-elif pred_downside > pred_upside:
+elif price > sell_trigger:
     raw_signal = "SELL"
 
 # ------------------------------------------------------------
 # THE GRID DEFENSE SYSTEM (CANCELED)
 # ------------------------------------------------------------
 signal = raw_signal
-reason = "Autonomous Execution" if raw_signal != "WAIT" else "Equilibrium (WAIT)"
+reason = "Autonomous Execution" if raw_signal != "WAIT" else "Price inside 0.6 midline zone (WAIT)"
 
 # ------------------------------------------------------------
 # ASSIGN FINAL VARIABLES FOR DATABASE
@@ -232,13 +238,15 @@ conn.close()
 # REPORT & TELEGRAM NOTIFICATION
 # ------------------------------------------------------------
 print("\n" + "="*64)
-print("QUANTUM SUPREME — CLOUD ENGINE (MODIFIED RULES)")
+print("QUANTUM SUPREME — CLOUD ENGINE (0.6 MIDLINE RULE)")
 print("="*64)
 print(f"UTC Time : {time_stamp}")
 print(f"Current  : {price:.0f}")
 print(f"ATR (14) : {atr:.0f}")
 print(f"RSI (14) : {rsi:.1f}")
 print("-" * 64)
+print(f"BUY TRIGGER (<)     : {buy_trigger:.0f}")
+print(f"SELL TRIGGER (>)    : {sell_trigger:.0f}")
 print(f"PROJECTED BUY ZONE  : {buy_zone_str} (Limit: {buy_limit:.0f})")
 print(f"PROJECTED SELL ZONE : {sell_zone_str} (Limit: {sell_limit:.0f})")
 print(f"EQUILIBRIUM TP      : {midline:.0f}")
