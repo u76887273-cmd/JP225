@@ -1,24 +1,40 @@
 import os
 import sys
+import subprocess
 import joblib
 import psycopg
 import pandas as pd
 import numpy as np
+from datetime import datetime, timezone
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error
 
 # ============================================================
-# QUANTUM SUPREME — AUTOMATED AI MODEL TRAINER (30-MIN HORIZON)
+# QUANTUM SUPREME — AUTOMATED AI MODEL TRAINER (ONCE PER DAY)
 # ============================================================
+
+MODEL_DIR = "models"
+os.makedirs(MODEL_DIR, exist_ok=True)
+LAST_TRAINED_FILE = f"{MODEL_DIR}/last_trained.txt"
+TODAY_UTC = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+# ------------------------------------------------------------
+# 0. CHECK IF ALREADY TRAINED TODAY (UTC)
+# ------------------------------------------------------------
+if os.path.exists(LAST_TRAINED_FILE):
+    with open(LAST_TRAINED_FILE, "r") as f:
+        last_trained = f.read().strip()
+    if last_trained == TODAY_UTC:
+        print(f"AI models already trained today ({TODAY_UTC}). Skipping training.")
+        sys.exit(0)
+
+print(f"Starting daily AI model training for {TODAY_UTC}...")
 
 # Retrieve database connection string from environment variables
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
     print("ERROR: DATABASE_URL environment variable is missing.")
     sys.exit(1)
-
-MODEL_DIR = "models"
-os.makedirs(MODEL_DIR, exist_ok=True)
 
 # ------------------------------------------------------------
 # 1. FETCH ALL HISTORICAL DATA FROM SUPABASE
@@ -118,19 +134,16 @@ bars["newyork"] = ((hour >= 13) & (hour < 21)).astype(int)
 # ------------------------------------------------------------
 print("Calculating 30-minute forward targets (next 6 candles)...")
 
-# Look ahead 6 bars (t+1 through t+6)
 future_highs = pd.concat([bars["high"].shift(-i) for i in range(1, 7)], axis=1)
 future_lows = pd.concat([bars["low"].shift(-i) for i in range(1, 7)], axis=1)
 
 bars["future_high_30m"] = future_highs.max(axis=1, skipna=False)
 bars["future_low_30m"] = future_lows.min(axis=1, skipna=False)
 
-# Targets: upside excursion, downside excursion, and total 30m range width
 bars["target_upside"] = (bars["future_high_30m"] - bars["close"]).clip(lower=0)
 bars["target_downside"] = (bars["close"] - bars["future_low_30m"]).clip(lower=0)
 bars["target_width"] = bars["future_high_30m"] - bars["future_low_30m"]
 
-# Canonical list of 31 features
 FEATURES = [
     "open", "high", "low", "close", "volume",
     "return_1", "return_3", "return_6",
@@ -144,7 +157,6 @@ FEATURES = [
     "tokyo", "london", "newyork"
 ]
 
-# Drop warm-up rows (first 50 bars) and incomplete future target rows (last 6 bars)
 train_df = bars.dropna(subset=["atr50", "target_upside", "target_downside", "target_width"]).copy()
 X = train_df[FEATURES].fillna(0)
 
@@ -154,7 +166,6 @@ y_width = train_df["target_width"]
 
 print(f"Training models on {len(X):,} clean historical samples...")
 
-# Model configuration matching Colab training
 model_params = {
     "max_iter": 300,
     "learning_rate": 0.05,
@@ -171,7 +182,6 @@ upside_model.fit(X, y_upside)
 downside_model.fit(X, y_downside)
 width_model.fit(X, y_width)
 
-# Calculate in-sample MAE for diagnostics
 up_mae = mean_absolute_error(y_upside, upside_model.predict(X))
 down_mae = mean_absolute_error(y_downside, downside_model.predict(X))
 width_mae = mean_absolute_error(y_width, width_model.predict(X))
@@ -182,6 +192,9 @@ joblib.dump(upside_model, f"{MODEL_DIR}/upside30.joblib")
 joblib.dump(downside_model, f"{MODEL_DIR}/downside30.joblib")
 joblib.dump(width_model, f"{MODEL_DIR}/width30.joblib")
 
+with open(LAST_TRAINED_FILE, "w") as f:
+    f.write(TODAY_UTC)
+
 print("\n" + "=" * 64)
 print("QUANTUM SUPREME — TRAINING COMPLETE")
 print("=" * 64)
@@ -190,5 +203,24 @@ print(f"Date Range         : {train_df['timestamp'].iloc[0]} -> {train_df['times
 print(f"Upside 30m MAE     : {up_mae:.2f} pts")
 print(f"Downside 30m MAE   : {down_mae:.2f} pts")
 print(f"Width 30m MAE      : {width_mae:.2f} pts")
-print(f"Saved Models To    : {MODEL_DIR}/ (upside30, downside30, width30, features)")
 print("=" * 64)
+
+# ------------------------------------------------------------
+# 4. SAVE UPDATED MODELS BACK TO GITHUB REPOSITORY
+# ------------------------------------------------------------
+try:
+    subprocess.run(["git", "config", "user.name", "github-actions[bot]"], check=True)
+    subprocess.run(["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"], check=True)
+    subprocess.run([
+        "git", "add",
+        f"{MODEL_DIR}/features.joblib",
+        f"{MODEL_DIR}/upside30.joblib",
+        f"{MODEL_DIR}/downside30.joblib",
+        f"{MODEL_DIR}/width30.joblib",
+        LAST_TRAINED_FILE
+    ], check=True)
+    subprocess.run(["git", "commit", "-m", f"Daily AI model retrain ({TODAY_UTC})"], check=False)
+    subprocess.run(["git", "push"], check=False)
+    print("Successfully saved updated models to GitHub repository.")
+except Exception as e:
+    print(f"Git commit/push skipped: {e}")
