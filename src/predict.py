@@ -183,10 +183,33 @@ elif pred_downside > pred_upside:
     raw_signal = "SELL"
 
 # ------------------------------------------------------------
+# FETCH LIVE NASDAQ (NQ=F) 15-MINUTE DIRECTION
+# ------------------------------------------------------------
+import json
+import urllib.request
+
+nas_dir = "FLAT"
+try:
+    nas_url = "https://query1.finance.yahoo.com/v8/finance/chart/NQ=F?interval=5m&range=1d"
+    req = urllib.request.Request(nas_url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        nas_data = json.loads(resp.read().decode("utf-8"))
+    raw_closes = nas_data["chart"]["result"][0]["indicators"]["quote"][0]["close"]
+    closes = [c for c in raw_closes if c is not None]
+    if len(closes) >= 4:
+        if closes[-1] > closes[-4]:
+            nas_dir = "UP"
+        elif closes[-1] < closes[-4]:
+            nas_dir = "DOWN"
+except Exception as e:
+    print(f"Nasdaq fetch skipped: {e}")
+
+# ------------------------------------------------------------
 # THE GRID DEFENSE SYSTEM (CANCELED)
 # ------------------------------------------------------------
 signal = raw_signal
-reason = "Autonomous Execution" if raw_signal != "WAIT" else "Equal upside and downside (WAIT)"
+base_reason = "Autonomous Execution" if raw_signal != "WAIT" else "Equal upside and downside (WAIT)"
+reason = f"{base_reason} | NAS:{nas_dir}"
 
 # ------------------------------------------------------------
 # ASSIGN FINAL VARIABLES FOR DATABASE
