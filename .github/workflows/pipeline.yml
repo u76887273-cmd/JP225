@@ -1,38 +1,51 @@
 name: JP225 Live Grid Engine
-
 on:
-  schedule:
-    - cron: '*/5 * * * *'
-  workflow_dispatch:
-
+schedule:
+- cron: '*/5 * * * *'
+workflow_dispatch:
+permissions:
+contents: write
 jobs:
-  quantum_grid:
-    runs-on: ubuntu-latest
-    env:
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      CTRADER_CLIENT_ID: ${{ secrets.CTRADER_CLIENT_ID }}
-      CTRADER_CLIENT_SECRET: ${{ secrets.CTRADER_CLIENT_SECRET }}
-      CTRADER_ACCESS_TOKEN: ${{ secrets.CTRADER_ACCESS_TOKEN }}
-      ACCOUNT_ID: ${{ secrets.ACCOUNT_ID }}
-      SYMBOL_ID: ${{ secrets.SYMBOL_ID }}
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-          cache: 'pip'
-
-      - name: Install Dependencies
-        run: pip install -r requirements.txt
-
-      - name: 1. Fetch Live Market Data (cTrader)
-        run: python src/data.py
-
-      - name: 2. Run AI Prediction Engine
-        run: python src/predict.py
-        
-      - name: 3. Run Grid State Validator
-        run: python src/validator.py
+quantum_grid:
+runs-on: ubuntu-latest
+env:
+DATABASE_URL: ${{ secrets.DATABASE_URL }}
+CTRADER_CLIENT_ID: ${{ secrets.CTRADER_CLIENT_ID }}
+CTRADER_CLIENT_SECRET: ${{ secrets.CTRADER_CLIENT_SECRET }}
+CTRADER_ACCESS_TOKEN: ${{ secrets.CTRADER_ACCESS_TOKEN }}
+ACCOUNT_ID: ${{ secrets.ACCOUNT_ID }}
+SYMBOL_ID: ${{ secrets.SYMBOL_ID }}
+TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+steps:
+- name: Checkout Repository
+uses: actions/checkout@v4
+- name: Set up Python
+uses: actions/setup-python@v5
+with:
+python-version: '3.10'
+cache: 'pip'
+- name: Install Dependencies
+run: pip install -r requirements.txt
+- name: 1. Fetch Live Market Data (cTrader)
+run: python src/data.py
+- name: 2. Daily AI Model Retraining (Once Per Day)
+run: |
+TODAY=￼
+￼(cat models/last_trained.txt 2>/dev/null || echo "never")
+if [ "$LAST_TRAIN" != "$TODAY" ]; then
+echo "Models not trained yet for $TODAY. Starting daily retraining..."
+python src/train.py
+echo "$TODAY" > models/last_trained.txt
+git config user.name "github-actions[bot]"
+git config user.email "github-actions[bot]@users.noreply.github.com"
+git add models/*.joblib models/last_trained.txt
+git commit -m "Daily AI model retrain ($TODAY)" || echo "No model changes to commit"
+git push
+else
+echo "AI models already trained today ($TODAY). Skipping training."
+fi
+- name: 3. Run AI Prediction Engine
+run: python src/predict.py
+- name: 4. Run Grid State Validator
+run: python src/validator.py
