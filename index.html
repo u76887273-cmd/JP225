@@ -40,6 +40,12 @@
                 <p class="text-sm text-slate-400 uppercase tracking-widest mb-2">Final AI Signal</p>
                 <h2 id="signal-val" class="text-5xl font-extrabold tracking-tight text-white mb-2">WAIT</h2>
                 <p id="reason-val" class="text-sm text-slate-400">Waiting for data...</p>
+
+                <!-- Nasdaq 15m Trend Arrow -->
+                <div class="mt-4 pt-4 border-t border-slate-700/60 flex items-center justify-center gap-3">
+                    <span class="text-xs text-slate-400 uppercase tracking-widest">Nasdaq (15m):</span>
+                    <span id="nasdaq-arrow" class="text-2xl font-extrabold text-slate-400">--</span>
+                </div>
             </div>
 
             <!-- Trade Zones -->
@@ -99,7 +105,7 @@
         // =========================================================
         const SUPABASE_URL = "https://gtezyactopcdfeyiyrzz.supabase.co"; 
         // PASTE YOUR SUPABASE KEY RIGHT HERE!
-        const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd0ZXp5YWN0b3BjZGZleWl5cnp6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE2ODE5MzcsImV4cCI6MjEwNzI1NzkzN30.o1lNY8NKe86xhTBxw0bzYGRYkZBigfyO2iE6f-Z5dJU";
+        const SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY";
 
         // =========================================================
         // SETUP 2: GITHUB API DETAILS
@@ -130,7 +136,22 @@
                     const date = new Date(row.timestamp);
                     document.getElementById('time-val').innerText = date.toLocaleString();
                     document.getElementById('price-val').innerText = row.price.toFixed(0); 
-                    document.getElementById('reason-val').innerText = row.reason || "Autonomous Execution";
+                    
+                    const rawReason = row.reason || "Autonomous Execution";
+                    const cleanReason = rawReason.split("|")[0].trim();
+                    document.getElementById('reason-val').innerText = cleanReason;
+
+                    const nasEl = document.getElementById('nasdaq-arrow');
+                    if (rawReason.includes("NAS:UP")) {
+                        nasEl.innerText = "▲ UP";
+                        nasEl.className = "text-2xl font-extrabold text-emerald-400 glow-text";
+                    } else if (rawReason.includes("NAS:DOWN")) {
+                        nasEl.innerText = "▼ DOWN";
+                        nasEl.className = "text-2xl font-extrabold text-rose-500 glow-text";
+                    } else {
+                        nasEl.innerText = "▬ FLAT";
+                        nasEl.className = "text-2xl font-extrabold text-slate-400";
+                    }
                     
                     const sigEl = document.getElementById('signal-val');
                     sigEl.innerText = row.signal;
