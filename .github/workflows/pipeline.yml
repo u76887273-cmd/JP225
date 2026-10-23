@@ -1,61 +1,78 @@
-{
-  "name": "JP225 Live Grid Engine",
-  "on": {
-    "schedule": [
-      { "cron": "*/5 * * * *" }
-    ],
-    "workflow_dispatch": null
-  },
-  "permissions": {
-    "contents": "write"
-  },
-  "jobs": {
-    "quantum_grid": {
-      "runs-on": "ubuntu-latest",
-      "env": {
-        "DATABASE_URL": "${{ secrets.DATABASE_URL }}",
-        "CTRADER_CLIENT_ID": "${{ secrets.CTRADER_CLIENT_ID }}",
-        "CTRADER_CLIENT_SECRET": "${{ secrets.CTRADER_CLIENT_SECRET }}",
-        "CTRADER_ACCESS_TOKEN": "${{ secrets.CTRADER_ACCESS_TOKEN }}",
-        "ACCOUNT_ID": "${{ secrets.ACCOUNT_ID }}",
-        "SYMBOL_ID": "${{ secrets.SYMBOL_ID }}",
-        "TELEGRAM_BOT_TOKEN": "${{ secrets.TELEGRAM_BOT_TOKEN }}",
-        "TELEGRAM_CHAT_ID": "${{ secrets.TELEGRAM_CHAT_ID }}"
-      },
-      "steps": [
-        {
-          "name": "Checkout Repository",
-          "uses": "actions/checkout@v4"
-        },
-        {
-          "name": "Set up Python",
-          "uses": "actions/setup-python@v5",
-          "with": {
-            "python-version": "3.10",
-            "cache": "pip"
-          }
-        },
-        {
-          "name": "Install Dependencies",
-          "run": "pip install -r requirements.txt"
-        },
-        {
-          "name": "1. Fetch Live Market Data (cTrader)",
-          "run": "python src/data.py"
-        },
-        {
-          "name": "2. Daily AI Model Retraining (Once Per Day)",
-          "run": "python src/train.py"
-        },
-        {
-          "name": "3. Run AI Prediction Engine",
-          "run": "python src/predict.py"
-        },
-        {
-          "name": "4. Run Grid State Validator",
-          "run": "python src/validator.py"
-        }
-      ]
-    }
-  }
-}
+name: JP225 Quantum Live Engine
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'   # Runs every 15 minutes
+  workflow_dispatch:
+    inputs:
+      force_train:
+        description: 'Force AI model retraining?'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: write
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .:./src
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      CTRADER_CLIENT_ID: ${{ secrets.CTRADER_CLIENT_ID }}
+      CTRADER_CLIENT_SECRET: ${{ secrets.CTRADER_CLIENT_SECRET }}
+      CTRADER_ACCESS_TOKEN: ${{ secrets.CTRADER_ACCESS_TOKEN }}
+      ACCOUNT_ID: ${{ secrets.ACCOUNT_ID }}
+      SYMBOL_ID: ${{ secrets.SYMBOL_ID }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Get Current UTC Date
+        id: date
+        run: echo "today=$(date -u +%Y-%m-%d)" >> $GITHUB_OUTPUT
+
+      - name: Restore Today's Trained AI Models from Cache
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            model_30m.pkl
+            model_4h.pkl
+            data_m5.csv
+          key: jp225-models-v3-${{ runner.os }}-${{ steps.date.outputs.today }}-${{ github.run_id }}
+          restore-keys: |
+            jp225-models-v3-${{ runner.os }}-${{ steps.date.outputs.today }}-
+            jp225-models-v3-${{ runner.os }}-
+
+      - name: 1. Fetch Live Market Data & Spot Price (cTrader)
+        run: python src/data.py
+
+      - name: 2. Daily AI Model Retraining (Once Per Day Only)
+        run: |
+          CURRENT_HOUR=$(date -u +%H)
+          CURRENT_MIN=$(date -u +%M)
+          if [ "${{ github.event.inputs.force_train }}" = "true" ] || [ ! -f "model_4h.pkl" ] || [ ! -f "model_30m.pkl" ] || ( [ "$CURRENT_HOUR" = "00" ] && [ "$CURRENT_MIN" -lt "15" ] ); then
+            echo "🔄 Running Daily JP225 AI Model Training on Full Historical Dataset..."
+            python src/train.py
+          else
+            echo "⚡ Skipping training! Using cached AI models for fast prediction."
+          fi
+
+      - name: 3. Run AI Prediction Engine
+        run: python src/predict.py
+
+      - name: 4. Run Grid State Validator
+        run: python src/validator.py
