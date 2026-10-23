@@ -1,91 +1,63 @@
 import os
-import sys
+import json
 import psycopg
-from psycopg.rows import dict_row
+import pandas as pd
 
-# ============================================================
-# JAPAN225 QUANTUM SUPREME — LIVE GRID VALIDATOR
-# Acts as "Cell 7": Upgrades PENDING -> OPEN -> WIN_TP
-# ============================================================
+DB_URL = os.environ.get("DATABASE_URL")
+TABLES = ["supreme_grid_log", "supreme_grid_log_4h"]
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
-if not DATABASE_URL:
-    print("ERROR: DATABASE_URL environment variable is missing.")
-    sys.exit(1)
+def get_current_high_low():
+    high_p, low_p = None, None
+    if os.path.exists("data_m5.csv"):
+        try:
+            df = pd.read_csv("data_m5.csv")
+            if not df.empty:
+                high_p = float(df["high"].iloc[-1])
+                low_p = float(df["low"].iloc[-1])
+        except Exception:
+            pass
 
-try:
-    conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
-    conn.autocommit = True
-    cur = conn.cursor()
-except Exception as e:
-    print(f"Database connection failed: {e}")
-    sys.exit(1)
+    if os.path.exists("latest_quote.json"):
+        try:
+            with open("latest_quote.json", "r", encoding="utf-8") as f:
+                q = json.load(f)
+            if q.get("status") == "QUOTE_RECEIVED":
+                spot = float(q.get("current_price") or 0)
+                if spot > 1000:
+                    high_p = max(high_p, spot) if high_p else spot
+                    low_p = min(low_p, spot) if low_p else spot
+        except Exception:
+            pass
 
-print("Fetching active trades and latest market data...")
+    return high_p, low_p
 
-# 1. Get the single latest 5-minute candle
-cur.execute("SELECT high, low, close FROM features_m5 ORDER BY timestamp DESC LIMIT 1;")
-latest_candle = cur.fetchone()
+def validate_tables():
+    if not DB_URL:
+        return
+    high_p, low_p = get_current_high_low()
+    if high_p is None or low_p is None:
+        return
 
-if not latest_candle:
-    print("No market data found. Exiting.")
-    sys.exit(0)
+    with psycopg.connect(DB_URL) as conn:
+        with conn.cursor() as cur:
+            for table in TABLES:
+                try:
+                    cur.execute(f"""
+                        UPDATE {table}
+                        SET status = 'TP_HIT'
+                        WHERE status IN ('ACTIVE', 'PENDING', 'OPEN')
+                          AND (
+                              (signal = 'BUY' AND take_profit <= %s)
+                              OR
+                              (signal = 'SELL' AND take_profit >= %s)
+                          );
+                    """, (high_p, low_p))
+                except Exception as e:
+                    conn.rollback()
+                    print(f"Validator note on {table}: {e}")
+                else:
+                    conn.commit()
+    print(f"✅ JP225 Grid State Validator completed (Checked against High={high_p:.2f}, Low={low_p:.2f}).")
 
-high = float(latest_candle['high'])
-low = float(latest_candle['low'])
-close = float(latest_candle['close'])
-
-# 2. Get all trades that are PENDING or OPEN
-cur.execute("SELECT * FROM supreme_grid_log WHERE status IN ('PENDING', 'OPEN') ORDER BY timestamp ASC;")
-active_trades = cur.fetchall()
-
-if not active_trades:
-    print("No active grid positions to manage. All clear.")
-    sys.exit(0)
-
-updated_count = 0
-
-# 3. State Machine Loop
-for trade in active_trades:
-    trade_id = trade['id']
-    sig = trade['signal']
-    status = trade['status']
-    entry = float(trade['entry'])
-    tp = float(trade['take_profit'])
-    
-    new_status = status
-
-    if sig == "BUY":
-        # Check if resting Limit Order was triggered
-        if status == "PENDING" and low <= entry:
-            new_status = "OPEN"
-            print(f"[{trade_id}] BUY Limit Triggered! PENDING -> OPEN")
-            
-        # Check if floating trade hit Take Profit
-        if new_status == "OPEN" and high >= tp:
-            new_status = "WIN_TP"
-            print(f"[{trade_id}] BUY Target Hit! OPEN -> WIN_TP")
-
-    elif sig == "SELL":
-        # Check if resting Limit Order was triggered
-        if status == "PENDING" and high >= entry:
-            new_status = "OPEN"
-            print(f"[{trade_id}] SELL Limit Triggered! PENDING -> OPEN")
-            
-        # Check if floating trade hit Take Profit
-        if new_status == "OPEN" and low <= tp:
-            new_status = "WIN_TP"
-            print(f"[{trade_id}] SELL Target Hit! OPEN -> WIN_TP")
-
-    # 4. Save to Database if State Changed
-    if new_status != status:
-        cur.execute(
-            "UPDATE supreme_grid_log SET status = %s WHERE id = %s",
-            (new_status, trade_id)
-        )
-        updated_count += 1
-
-cur.close()
-conn.close()
-
-print(f"Validator complete. {updated_count} states updated based on latest candle.")
+if __name__ == "__main__":
+    validate_tables()
