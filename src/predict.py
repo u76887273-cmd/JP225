@@ -1,306 +1,263 @@
 import os
 import sys
+import json
+import datetime
+import urllib.request
+import urllib.parse
 import joblib
 import psycopg
 import pandas as pd
-import numpy as np
-from datetime import datetime, timezone
 
-# ============================================================
-# QUANTUM SUPREME — LIVE PREDICTION ENGINE (UNLEASHED & CUSTOMIZED)
-# ============================================================
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from train import build_features, FEATURES, ensure_unique_timestamp_constraint
 
-# Database connection from GitHub Secrets
-DATABASE_URL = os.environ.get("DATABASE_URL")
-if not DATABASE_URL:
-    print("ERROR: DATABASE_URL environment variable is missing.")
-    sys.exit(1)
+DB_URL = os.environ.get("DATABASE_URL")
+RAW_BARS_TABLE = "features_m5"  # Matches your existing JP225 Supabase table
 
-# Paths for GitHub Actions runner
-MODEL_DIR = "models"
+TABLES = {
+    "30m": "supreme_grid_log",
+    "4h":  "supreme_grid_log_4h"
+}
 
-# Broker spread adjustment removed (set to 0.0)
-FEE = 0.0 
+def parse_mixed_timestamps(series):
+    try:
+        return pd.to_datetime(series, format="ISO8601", utc=True, errors="coerce")
+    except Exception:
+        return pd.to_datetime(series, format="mixed", utc=True, errors="coerce")
 
-# ------------------------------------------------------------
-# DATABASE CONNECTION & SCHEMA VERIFICATION
-# ------------------------------------------------------------
-try:
-    conn = psycopg.connect(DATABASE_URL)
-    conn.autocommit = True 
-except Exception as e:
-    print(f"Database connection failed: {e}")
-    sys.exit(1)
+def get_live_spot_quote():
+    """Reads latest_quote.json produced by data.py if a fresh quote was received."""
+    if os.path.exists("latest_quote.json"):
+        try:
+            with open("latest_quote.json", "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if data.get("status") == "QUOTE_RECEIVED":
+                price = data.get("current_price")
+                if price is not None and float(price) > 1000:
+                    return float(price)
+        except Exception as e:
+            print(f"Note reading latest_quote.json: {e}")
+    return None
 
-cur = conn.cursor()
+def sync_recent_bars_and_load_warmup(conn, live_spot):
+    ensure_unique_timestamp_constraint(conn)
+    local_df = pd.DataFrame()
+    if os.path.exists("data_m5.csv"):
+        try:
+            local_df = pd.read_csv("data_m5.csv")
+            local_df.columns = [c.lower() for c in local_df.columns]
+            if "timestamp" in local_df.columns and "close" in local_df.columns:
+                local_df["timestamp"] = parse_mixed_timestamps(local_df["timestamp"])
+                for col in ["open", "high", "low", "close"]:
+                    local_df[col] = pd.to_numeric(local_df[col], errors="coerce")
+                local_df["volume"] = pd.to_numeric(local_df.get("volume", 0.0), errors="coerce").fillna(0.0)
+                local_df = local_df.dropna(subset=["timestamp", "open", "high", "low", "close"]).sort_values("timestamp")
 
-# Ensure the log table exists in Postgres
-cur.execute("""
-CREATE TABLE IF NOT EXISTS supreme_grid_log (
-    id SERIAL PRIMARY KEY,
-    timestamp TIMESTAMPTZ UNIQUE,
-    price REAL,
-    signal TEXT,
-    reason TEXT,
-    entry_zone TEXT,
-    entry REAL,
-    take_profit REAL,
-    status TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-""")
+                if live_spot is not None and not local_df.empty:
+                    idx = local_df.index[-1]
+                    local_df.loc[idx, "close"] = live_spot
+                    if live_spot > float(local_df.loc[idx, "high"]):
+                        local_df.loc[idx, "high"] = live_spot
+                    if live_spot < float(local_df.loc[idx, "low"]):
+                        local_df.loc[idx, "low"] = live_spot
 
-print("Fetching recent market data...")
-cur.execute("SELECT * FROM features_m5 ORDER BY timestamp DESC LIMIT 200;")
-columns = [desc[0] for desc in cur.description]
-data = cur.fetchall()
+                recent_slice = local_df.tail(250)
+                with conn.cursor() as cur:
+                    insert_data = [
+                        (
+                            row["timestamp"].isoformat(),
+                            float(row["open"]),
+                            float(row["high"]),
+                            float(row["low"]),
+                            float(row["close"]),
+                            float(row["volume"])
+                        )
+                        for _, row in recent_slice.iterrows()
+                    ]
+                    cur.executemany(
+                        f"""
+                        INSERT INTO {RAW_BARS_TABLE} (timestamp, open, high, low, close, volume)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (timestamp) DO UPDATE SET
+                            high = GREATEST({RAW_BARS_TABLE}.high, EXCLUDED.high),
+                            low = LEAST({RAW_BARS_TABLE}.low, EXCLUDED.low),
+                            close = EXCLUDED.close,
+                            volume = EXCLUDED.volume;
+                        """,
+                        insert_data
+                    )
+                conn.commit()
+        except Exception as e:
+            conn.rollback()
+            print(f"Note on live bar sync: {e}")
 
-if not data:
-    print("No data found in features_m5. Exiting.")
-    sys.exit(0)
+    db_df = pd.DataFrame()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                SELECT timestamp, open, high, low, close, volume
+                FROM {RAW_BARS_TABLE}
+                ORDER BY timestamp DESC
+                LIMIT 1500;
+            """)
+            rows = cur.fetchall()
+            col_names = [desc[0].lower() for desc in cur.description]
 
-bars = pd.DataFrame(data, columns=columns)
-bars["timestamp"] = pd.to_datetime(bars["timestamp"], utc=True)
-bars = bars.sort_values("timestamp").reset_index(drop=True)
+        db_df = pd.DataFrame(rows, columns=col_names)
+        if not db_df.empty:
+            db_df["timestamp"] = parse_mixed_timestamps(db_df["timestamp"])
+            for col in ["open", "high", "low", "close"]:
+                db_df[col] = pd.to_numeric(db_df[col], errors="coerce")
+            db_df["volume"] = pd.to_numeric(db_df["volume"], errors="coerce").fillna(0.0)
+    except Exception as e:
+        print(f"Note on DB warmup fetch: {e}")
 
-# ------------------------------------------------------------
-# DYNAMIC FEATURE ENGINEERING
-# ------------------------------------------------------------
-print("Engineering advanced features for AI...")
+    combined = pd.concat([db_df, local_df], ignore_index=True)
+    combined = (
+        combined.dropna(subset=["timestamp", "open", "high", "low", "close"])
+        .drop_duplicates(subset=["timestamp"], keep="last")
+        .sort_values(by="timestamp")
+        .tail(1500)
+        .reset_index(drop=True)
+    )
 
-# Returns
-bars['return_1'] = bars['close'].pct_change(1) * 100
-bars['return_3'] = bars['close'].pct_change(3) * 100
-bars['return_6'] = bars['close'].pct_change(6) * 100
+    if live_spot is not None and not combined.empty:
+        idx = combined.index[-1]
+        combined.loc[idx, "close"] = live_spot
+        if live_spot > float(combined.loc[idx, "high"]):
+            combined.loc[idx, "high"] = live_spot
+        if live_spot < float(combined.loc[idx, "low"]):
+            combined.loc[idx, "low"] = live_spot
 
-# Candle shapes
-bars['body'] = bars['close'] - bars['open']
-bars['upper_wick'] = bars['high'] - bars[['open', 'close']].max(axis=1)
-bars['lower_wick'] = bars[['open', 'close']].min(axis=1) - bars['low']
+    return combined
 
-# EMAs
-bars['ema20'] = bars['close'].ewm(span=20, adjust=False).mean()
-bars['ema50'] = bars['close'].ewm(span=50, adjust=False).mean()
-bars['ema_gap'] = bars['ema20'] - bars['ema50']
-bars['ema20_slope'] = bars['ema20'].diff()
+def init_db_table(conn, table_name):
+    with conn.cursor() as cur:
+        cur.execute(f"""
+            CREATE TABLE IF NOT EXISTS {table_name} (
+                id SERIAL PRIMARY KEY,
+                timestamp TIMESTAMPTZ NOT NULL,
+                price NUMERIC(10, 2) NOT NULL,
+                signal VARCHAR(16) NOT NULL,
+                reason TEXT,
+                entry_zone VARCHAR(64),
+                entry NUMERIC(10, 2),
+                take_profit NUMERIC(10, 2),
+                status VARCHAR(32) DEFAULT 'ACTIVE',
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+            ALTER TABLE {table_name} DROP CONSTRAINT IF EXISTS {table_name}_timestamp_key;
+            GRANT SELECT ON {table_name} TO anon, authenticated;
+        """)
+    conn.commit()
 
-# ATRs
-bars['prev_close'] = bars['close'].shift(1)
-bars['tr1'] = bars['high'] - bars['low']
-bars['tr2'] = (bars['high'] - bars['prev_close']).abs()
-bars['tr3'] = (bars['low'] - bars['prev_close']).abs()
-bars['tr'] = bars[['tr1', 'tr2', 'tr3']].max(axis=1)
-bars['atr14'] = bars['tr'].rolling(14).mean()
-bars['atr50'] = bars['tr'].rolling(50).mean()
-bars['relative_atr'] = bars['atr14'] / bars['atr50']
+def send_telegram_alert(tf, signal, price_0d, entry_zone, eq_0d, rsi, stretch_pct):
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if not (bot_token and chat_id and signal in ["BUY", "SELL"]):
+        return
 
-# RSI 14
-delta = bars["close"].diff()
-gain = delta.clip(lower=0).rolling(14).mean()
-loss = (-delta.clip(upper=0)).rolling(14).mean()
-rs = gain / loss.replace(0, np.nan)
-bars["rsi14"] = 100 - (100 / (1 + rs))
-
-# VWAP (Daily Reset) - SAFE CUMSUM METHOD
-bars['date'] = bars['timestamp'].dt.date
-bars['typical_price'] = (bars['high'] + bars['low'] + bars['close']) / 3
-
-cum_vp = (bars['typical_price'] * bars['volume']).groupby(bars['date']).cumsum()
-cum_v = bars['volume'].groupby(bars['date']).cumsum()
-bars['vwap'] = cum_vp / cum_v
-
-bars['vwap_distance'] = bars['close'] - bars['vwap']
-
-# Opening Range (OR)
-or_df = bars.groupby('date').head(12).groupby('date').agg({
-    'high': 'max', 'low': 'min', 'open': 'first'
-})
-bars['opening_high'] = bars['date'].map(or_df['high'])
-bars['opening_low'] = bars['date'].map(or_df['low'])
-bars['opening_open'] = bars['date'].map(or_df['open'])
-
-bars['dist_or_high'] = bars['close'] - bars['opening_high']
-bars['dist_or_low'] = bars['close'] - bars['opening_low']
-bars['dist_open_price'] = bars['close'] - bars['opening_open']
-bars['inside_or'] = ((bars['close'] < bars['opening_high']) & (bars['close'] > bars['opening_low'])).astype(int)
-
-# Sessions
-hour = bars['timestamp'].dt.hour
-bars['tokyo'] = ((hour >= 0) & (hour < 8)).astype(int)
-bars['london'] = ((hour >= 8) & (hour < 16)).astype(int)
-bars['newyork'] = ((hour >= 13) & (hour < 21)).astype(int)
-
-latest = bars.iloc[-1:]
-
-# ------------------------------------------------------------
-# LOAD SUPREME MODELS & PREDICT
-# ------------------------------------------------------------
-print("Loading Supreme ML Models...")
-FEATURES = joblib.load(f"{MODEL_DIR}/features.joblib")
-upside_model = joblib.load(f"{MODEL_DIR}/upside30.joblib")
-downside_model = joblib.load(f"{MODEL_DIR}/downside30.joblib")
-width_model = joblib.load(f"{MODEL_DIR}/width30.joblib")
-
-X = latest[FEATURES].fillna(0)
-
-price = float(latest.close.iloc[0])
-atr   = float(latest.atr14.iloc[0])
-rsi   = float(latest.rsi14.iloc[0])
-time_stamp = latest.timestamp.iloc[0]
-
-pred_upside   = float(upside_model.predict(X)[0])
-pred_downside = float(downside_model.predict(X)[0])
-pred_width    = float(width_model.predict(X)[0])
-
-# ------------------------------------------------------------
-# PROJECT ALL ZONES (ZONE HEIGHT = 20%, FEE = 0.0)
-# ------------------------------------------------------------
-proj_high = price + pred_upside
-proj_low  = price - pred_downside
-midline = (proj_high + proj_low) / 2
-zone_height = pred_width * 0.20
-
-buy_zone_bottom = proj_low - FEE
-buy_zone_top = (proj_low + zone_height) - FEE
-buy_zone_str = f"{buy_zone_bottom:.0f} to {buy_zone_top:.0f}"
-buy_limit = buy_zone_top
-buy_tp = midline
-
-sell_zone_bottom = proj_high - zone_height
-sell_zone_top = proj_high
-sell_zone_str = f"{sell_zone_bottom:.0f} to {sell_zone_top:.0f}"
-sell_limit = sell_zone_bottom
-sell_tp = midline - FEE
-
-# ------------------------------------------------------------
-# RAW SIGNAL GENERATION (PURE DIRECTIONAL / 0.6 RULE CANCELED)
-# ------------------------------------------------------------
-raw_signal = "WAIT"
-
-if pred_upside > pred_downside:
-    raw_signal = "BUY"
-elif pred_downside > pred_upside:
-    raw_signal = "SELL"
-
-# ------------------------------------------------------------
-# FETCH LIVE NASDAQ (NQ=F) 15-MINUTE DIRECTION
-# ------------------------------------------------------------
-import json
-import urllib.request
-
-nas_dir = "FLAT"
-try:
-    nas_url = "https://query1.finance.yahoo.com/v8/finance/chart/NQ=F?interval=5m&range=1d"
-    req = urllib.request.Request(nas_url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        nas_data = json.loads(resp.read().decode("utf-8"))
-    raw_closes = nas_data["chart"]["result"][0]["indicators"]["quote"][0]["close"]
-    closes = [c for c in raw_closes if c is not None]
-    if len(closes) >= 4:
-        if closes[-1] > closes[-4]:
-            nas_dir = "UP"
-        elif closes[-1] < closes[-4]:
-            nas_dir = "DOWN"
-except Exception as e:
-    print(f"Nasdaq fetch skipped: {e}")
-
-# ------------------------------------------------------------
-# THE GRID DEFENSE SYSTEM (CANCELED)
-# ------------------------------------------------------------
-signal = raw_signal
-base_reason = "Autonomous Execution" if raw_signal != "WAIT" else "Equal upside and downside (WAIT)"
-reason = f"{base_reason} | NAS:{nas_dir}"
-
-# ------------------------------------------------------------
-# ASSIGN FINAL VARIABLES FOR DATABASE
-# ------------------------------------------------------------
-if signal == "BUY":
-    chart_zone, chart_entry, chart_tp = buy_zone_str, buy_limit, buy_tp
-elif signal == "SELL":
-    chart_zone, chart_entry, chart_tp = sell_zone_str, sell_limit, sell_tp
-else:
-    chart_zone = f"B: {buy_zone_str} | S: {sell_zone_str}"
-    chart_entry = "-" 
-    chart_tp = midline
-
-# ------------------------------------------------------------
-# INSERT INTO LOG (SUPABASE via psycopg3)
-# ------------------------------------------------------------
-ts = str(time_stamp)
-entry_val = None if chart_entry == "-" else float(chart_entry)
-tp_val    = None if chart_tp == "-" else float(chart_tp)
-zone_val  = None if chart_zone == "-" else chart_zone
-
-cur.execute("""
-INSERT INTO supreme_grid_log (
-    timestamp, price, signal, reason, entry_zone, entry, take_profit, status
-)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-ON CONFLICT (timestamp) DO NOTHING;
-""", (
-    ts,
-    round(price, 0),
-    signal,
-    reason,
-    zone_val,
-    entry_val,
-    tp_val,
-    "PENDING" if signal != "WAIT" else "IGNORED"
-))
-
-cur.close()
-conn.close()
-
-# ------------------------------------------------------------
-# REPORT & TELEGRAM NOTIFICATION
-# ------------------------------------------------------------
-print("\n" + "="*64)
-print("QUANTUM SUPREME — CLOUD ENGINE (UNLEASHED)")
-print("="*64)
-print(f"UTC Time : {time_stamp}")
-print(f"Current  : {price:.0f}")
-print(f"ATR (14) : {atr:.0f}")
-print(f"RSI (14) : {rsi:.1f}")
-print("-" * 64)
-print(f"PROJECTED BUY ZONE  : {buy_zone_str} (Limit: {buy_limit:.0f})")
-print(f"PROJECTED SELL ZONE : {sell_zone_str} (Limit: {sell_limit:.0f})")
-print(f"EQUILIBRIUM TP      : {midline:.0f}")
-print("-" * 64)
-print(f"FINAL SIGNAL  : {signal}")
-print(f"REASON        : {reason}")
-if signal != "WAIT":
-    print(f">> EXECUTING LIMIT ORDER AT {chart_entry:.0f} <<")
-print("="*64)
-
-# Grab Telegram credentials from GitHub Secrets
-bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
-chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-
-if bot_token and chat_id and signal in ["BUY", "SELL"]:
-    import urllib.request
-    import urllib.parse
-    
-    msg = f"🦅 *QUANTUM SUPREME*\n"
-    msg += f"========================\n"
-    msg += f"💰 *Current Price:* {price:.0f}\n"
-    msg += f"📊 *ATR:* {atr:.0f} | *RSI:* {rsi:.1f}\n\n"
-    
-    if signal == "BUY":
-        msg += f"🟢 *SIGNAL: BUY*\n"
-        msg += f"🎯 *LIMIT ENTRY:* {chart_entry:.0f}\n"
-        msg += f"🏁 *TAKE PROFIT:* {chart_tp:.0f}\n\n"
-        msg += f"📍 _Zone:_ {chart_zone}\n"
-    elif signal == "SELL":
-        msg += f"🔴 *SIGNAL: SELL*\n"
-        msg += f"🎯 *LIMIT ENTRY:* {chart_entry:.0f}\n"
-        msg += f"🏁 *TAKE PROFIT:* {chart_tp:.0f}\n\n"
-        msg += f"📍 _Zone:_ {chart_zone}\n"
-
+    icon = "🟢" if signal == "BUY" else "🔴"
+    msg = (
+        f"🦅 *JP225 QUANTUM ({tf.upper()})*\n"
+        f"========================\n"
+        f"{icon} *SIGNAL: {signal}*\n"
+        f"💰 *Live Price:* {price_0d:.0f}\n"
+        f"🏁 *Equilibrium TP:* {eq_0d:.0f}\n"
+        f"📍 *Limit Zone:* {entry_zone}\n"
+        f"📊 *Stretch:* {stretch_pct:.1f}% | *RSI:* {rsi:.1f}"
+    )
     try:
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        data = urllib.parse.urlencode({'chat_id': chat_id, 'text': msg, 'parse_mode': 'Markdown'}).encode('utf-8')
+        data = urllib.parse.urlencode({"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"}).encode("utf-8")
         req = urllib.request.Request(url, data=data)
-        urllib.request.urlopen(req)
-        print("Telegram alert sent successfully!")
+        urllib.request.urlopen(req, timeout=10)
+        print(f"[{tf.upper()}] Telegram alert sent!")
     except Exception as e:
-        print(f"Failed to send Telegram alert: {e}")
+        print(f"[{tf.upper()}] Telegram alert note: {e}")
+
+def predict_for_timeframe(conn, raw_df, tf, live_spot):
+    model_path = f"model_{tf}.pkl"
+    table_name = TABLES[tf]
+
+    if not os.path.exists(model_path):
+        print(f"[{tf.upper()}] Model file {model_path} missing.")
+        return
+
+    df_feat = build_features(raw_df, tf).dropna(subset=FEATURES).reset_index(drop=True)
+    if df_feat.empty:
+        print(f"[{tf.upper()}] Not enough warmup bars to compute features (rows={len(raw_df)}).")
+        return
+
+    models = joblib.load(model_path)
+    latest_row = df_feat.iloc[[-1]]
+
+    model_features = list(getattr(models["up"], "feature_names_in_", FEATURES))
+    X_latest = latest_row[model_features]
+
+    price = float(live_spot) if live_spot is not None else float(latest_row["close"].iloc[0])
+    rsi = float(latest_row["rsi"].iloc[0])
+    anchor_ema = float(latest_row["ema_fast"].iloc[0])
+
+    pred_up = float(models["up"].predict(X_latest)[0])
+    pred_down = float(models["down"].predict(X_latest)[0])
+
+    # Projected range anchored to structural EMA
+    proj_high = anchor_ema + pred_up
+    proj_low = anchor_ema - pred_down
+    total_range = max(proj_high - proj_low, 10.0)
+
+    midline_eq = (proj_high + proj_low) / 2.0
+    half_range = total_range / 2.0
+
+    # 60% Distance Thresholds (0.60) for BOTH 30m and 4h
+    sell_trigger = midline_eq + (half_range * 0.60)
+    buy_trigger = midline_eq - (half_range * 0.60)
+
+    if price <= buy_trigger:
+        signal = "BUY"
+    elif price >= sell_trigger:
+        signal = "SELL"
+    else:
+        signal = "WAIT"
+
+    zone_height = max(half_range * 0.20, 5.0)
+    buy_low = round(proj_low, 0)
+    buy_high = round(proj_low + zone_height, 0)
+    sell_low = round(proj_high - zone_height, 0)
+    sell_high = round(proj_high, 0)
+
+    price_0d = round(price, 0)
+    eq_0d = round(midline_eq, 0)
+
+    if signal == "BUY":
+        entry_zone = f"B: {buy_low:.0f} - {buy_high:.0f} | S: WAITING"
+    elif signal == "SELL":
+        entry_zone = f"B: WAITING | S: {sell_low:.0f} - {sell_high:.0f}"
+    else:
+        entry_zone = f"B: {buy_low:.0f} - {buy_high:.0f} | S: {sell_low:.0f} - {sell_high:.0f}"
+
+    # True Stretch % from Equilibrium toward Upper/Lower Limit (60.0%+ triggers BUY/SELL)
+    stretch_pct = min((abs(price - midline_eq) / max(half_range, 1.0)) * 100.0, 100.0)
+
+    reason = f"Bias:{stretch_pct:.1f}% | RSI:{rsi:.1f}"
+    run_ts = datetime.datetime.now(datetime.timezone.utc)
+
+    init_db_table(conn, table_name)
+
+    with conn.cursor() as cur:
+        cur.execute(f"""
+            INSERT INTO {table_name} (timestamp, price, signal, reason, entry_zone, entry, take_profit, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'ACTIVE')
+        """, (run_ts, price_0d, signal, reason, entry_zone, price_0d, eq_0d))
+    conn.commit()
+    print(f"[{tf.upper()}] {signal} @ {price_0d:.0f} (Spot: {price:.2f}) | AnchorEMA:{anchor_ema:.0f} | Buy<={buy_trigger:.0f} Sell>={sell_trigger:.0f} | EQ/TP: {eq_0d:.0f} | {reason}")
+
+    send_telegram_alert(tf, signal, price_0d, entry_zone, eq_0d, rsi, stretch_pct)
+
+if __name__ == "__main__":
+    live_spot = get_live_spot_quote()
+    with psycopg.connect(DB_URL) as conn:
+        raw_df = sync_recent_bars_and_load_warmup(conn, live_spot)
+        for tf in ["30m", "4h"]:
+            predict_for_timeframe(conn, raw_df, tf, live_spot)
