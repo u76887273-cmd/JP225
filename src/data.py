@@ -1,195 +1,318 @@
+"""Fetch cTrader JP225 M5 bars and live spot quote with clean connection handling."""
+
+import datetime as dt
+import json
 import os
 import sys
-import psycopg
-import pandas as pd
-from datetime import datetime, timezone, timedelta
-from twisted.internet import reactor
+from pathlib import Path
 
-from ctrader_open_api import Client, TcpProtocol, EndPoints, Protobuf
+import pandas as pd
+from twisted.internet import reactor
+from ctrader_open_api import Client, Protobuf, TcpProtocol, EndPoints
 from ctrader_open_api.messages.OpenApiCommonMessages_pb2 import *
 from ctrader_open_api.messages.OpenApiMessages_pb2 import *
 from ctrader_open_api.messages.OpenApiModelMessages_pb2 import *
 
-# ============================================================
-# 1. LOAD CREDENTIALS FROM GITHUB SECRETS
-# ============================================================
-DATABASE_URL = os.environ.get("DATABASE_URL")
-CTRADER_CLIENT_ID = os.environ.get("CTRADER_CLIENT_ID")
-CTRADER_CLIENT_SECRET = os.environ.get("CTRADER_CLIENT_SECRET")
-CTRADER_ACCESS_TOKEN = os.environ.get("CTRADER_ACCESS_TOKEN")
-ACCOUNT_ID = int(os.environ.get("ACCOUNT_ID", 0))
-SYMBOL_ID = int(os.environ.get("SYMBOL_ID", 0))
 
-if not all([DATABASE_URL, CTRADER_CLIENT_ID, CTRADER_CLIENT_SECRET, CTRADER_ACCESS_TOKEN, ACCOUNT_ID, SYMBOL_ID]):
-    print("ERROR: Missing one or more required environment variables/secrets.")
-    sys.exit(1)
+def get_env_str(*keys, default=""):
+    for key in keys:
+        value = os.environ.get(key)
+        if value and str(value).strip():
+            return str(value).strip()
+    return default
 
-# ============================================================
-# 2. DATABASE HELPER FUNCTIONS (Psycopg 3)
-# ============================================================
-def get_latest_timestamp():
-    """Fetches the most recent bar timestamp from Supabase."""
+
+def get_env_int(*keys, default=0):
+    for key in keys:
+        value = os.environ.get(key)
+        if value and str(value).strip():
+            try:
+                return int(str(value).strip())
+            except ValueError:
+                pass
+    return default
+
+
+CLIENT_ID = get_env_str("CTRADER_CLIENT_ID", "CLIENT_ID", "CTRADER_ID", "APP_CLIENT_ID")
+CLIENT_SECRET = get_env_str("CTRADER_CLIENT_SECRET", "CLIENT_SECRET", "CTRADER_SECRET", "APP_CLIENT_SECRET")
+ACCESS_TOKEN = get_env_str("CTRADER_ACCESS_TOKEN", "ACCESS_TOKEN", "CTRADER_TOKEN", "TOKEN")
+ACCOUNT_ID = get_env_int("ACCOUNT_ID", "CTRADER_ACCOUNT_ID", "CTID_TRADER_ACCOUNT_ID", default=0)
+SYMBOL_ID = get_env_int("SYMBOL_ID", "CTRADER_SYMBOL_ID", default=0)
+EXPECTED_SYMBOL = get_env_str("CTRADER_EXPECTED_SYMBOL", default="JP225").upper()
+CTRADER_ENV = get_env_str("CTRADER_ENV", "CTRADER_ACCOUNT_ENV", default="live").lower()
+DATA_DIR = Path(get_env_str("DATA_DIR", default="."))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+PRICE_SCALE = 100000.0
+PRICE_DIGITS = get_env_int("CTRADER_PRICE_DIGITS", default=2)
+CTRADER_HOST = EndPoints.PROTOBUF_DEMO_HOST if CTRADER_ENV == "demo" else EndPoints.PROTOBUF_LIVE_HOST
+
+client = Client(CTRADER_HOST, EndPoints.PROTOBUF_PORT, TcpProtocol)
+timeout_call = None
+symbol_name = "#JP225"
+m5_done = False
+quote_done = False
+shutting_down = False
+latest_spot_bid = None
+
+
+def utc_now():
+    return dt.datetime.now(dt.timezone.utc)
+
+
+def iso_utc(value):
+    return value.astimezone(dt.timezone.utc).isoformat()
+
+
+def write_json_atomic(path: Path, payload: dict):
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    with temp_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, ensure_ascii=False)
+    os.replace(temp_path, path)
+
+
+def inject_live_spot_into_m5():
+    """Updates the latest M5 candle with the real-time cTrader spot BID."""
+    m5_path = DATA_DIR / "data_m5.csv"
+    if latest_spot_bid is None or not m5_path.exists():
+        return
     try:
-        with psycopg.connect(DATABASE_URL) as conn:
-            with conn.cursor() as cur:
-                # Assuming your main table is called features_m5 based on the prediction script
-                cur.execute("SELECT MAX(timestamp) FROM features_m5;")
-                result = cur.fetchone()[0]
-                if result:
-                    return result.replace(tzinfo=timezone.utc)
+        df = pd.read_csv(m5_path)
+        if df.empty:
+            return
+        last_idx = df.index[-1]
+        spot_val = round(float(latest_spot_bid), PRICE_DIGITS)
+        df.loc[last_idx, "close"] = spot_val
+        if spot_val > float(df.loc[last_idx, "high"]):
+            df.loc[last_idx, "high"] = spot_val
+        if spot_val < float(df.loc[last_idx, "low"]):
+            df.loc[last_idx, "low"] = spot_val
+        df.to_csv(m5_path, index=False)
+        print(f"⚡ Synced live spot BID ({spot_val:.{PRICE_DIGITS}f}) into latest M5 bar close.")
     except Exception as e:
-        print(f"Database read error: {e}")
-    return None
+        print(f"Note on syncing spot into M5 CSV: {e}")
 
-def save_new_bars(df):
-    """Saves the downloaded pandas DataFrame into Supabase."""
-    try:
-        with psycopg.connect(DATABASE_URL) as conn:
-            with conn.cursor() as cur:
-                for _, row in df.iterrows():
-                    cur.execute("""
-                        INSERT INTO features_m5 (timestamp, open, high, low, close, volume)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (timestamp) DO NOTHING;
-                    """, (
-                        row['timestamp'], row['open'], row['high'], 
-                        row['low'], row['close'], row['volume']
-                    ))
-            conn.commit()
-    except Exception as e:
-        print(f"Database write error: {e}")
 
-# ============================================================
-# 3. SETUP TARGET TIME & MISSING DATA RANGE
-# ============================================================
-now_utc = datetime.now(timezone.utc)
-target_minute = (now_utc.minute // 5) * 5
-target_ts = now_utc.replace(minute=target_minute, second=0, microsecond=0)
-
-last_ts = get_latest_timestamp()
-
-if not last_ts:
-    print("Database is empty or table missing. Defaulting to 7 days of history.")
-    last_ts = target_ts - timedelta(days=7)
-
-FIVE_MIN_MS = 5 * 60 * 1000
-CHUNK_DAYS = 7
-CHUNK_MS = CHUNK_DAYS * 24 * 60 * 60 * 1000
-
-FROM = int(last_ts.timestamp() * 1000) + FIVE_MIN_MS
-TO = int(target_ts.timestamp() * 1000)
-
-if FROM >= TO:
-    print("✓ SUPABASE DATABASE IS ALREADY UP TO DATE.")
-    sys.exit(0)
-
-print(f"Download start : {datetime.fromtimestamp(FROM / 1000, tz=timezone.utc)}")
-print(f"Download target: {datetime.fromtimestamp(TO / 1000, tz=timezone.utc)}")
-
-# ============================================================
-# 4. CTRADER AUTOMATION SETUP
-# ============================================================
-current_from = FROM
-total_inserted = 0
-download_error = None
-
-client = Client(EndPoints.PROTOBUF_LIVE_HOST, EndPoints.PROTOBUF_PORT, TcpProtocol)
-
-def stop_client():
+def stop_reactor_safely():
+    global timeout_call, shutting_down
+    shutting_down = True
+    if timeout_call is not None and timeout_call.active():
+        timeout_call.cancel()
     try:
         client.stopService()
     except Exception:
         pass
     if reactor.running:
-        reactor.stop()
+        reactor.callLater(0.1, reactor.stop)
 
-def send_next_request():
-    global current_from
-    if current_from >= TO:
-        stop_client()
+
+def maybe_finish():
+    if m5_done and quote_done and not shutting_down:
+        inject_live_spot_into_m5()
+        print("✅ JP225 M5 bars and live cTrader spot price synced cleanly.")
+        stop_reactor_safely()
+
+
+def on_timeout():
+    if not shutting_down:
+        print("⚠️ WARNING: cTrader fetch timed out after 40 seconds. Proceeding with available data.")
+        inject_live_spot_into_m5()
+        stop_reactor_safely()
+
+
+def on_fatal_error(failure):
+    if not shutting_down:
+        print(f"❌ cTrader API error: {failure}")
+        stop_reactor_safely()
+    return None
+
+
+def connected(client_instance):
+    request = ProtoOAApplicationAuthReq()
+    request.clientId = CLIENT_ID
+    request.clientSecret = CLIENT_SECRET
+    deferred = client_instance.send(request)
+    deferred.addCallback(on_app_auth)
+    deferred.addErrback(on_fatal_error)
+
+
+def on_app_auth(_result):
+    request = ProtoOAAccountAuthReq()
+    request.ctidTraderAccountId = ACCOUNT_ID
+    request.accessToken = ACCESS_TOKEN
+    deferred = client.send(request)
+    deferred.addCallback(on_account_auth)
+    deferred.addErrback(on_fatal_error)
+
+
+def on_account_auth(_result):
+    print(f"cTrader account authenticated. Requesting live spot & M5 bars for Symbol ID {SYMBOL_ID}...")
+    start_market_data_requests()
+
+
+def trendbar_to_row(bar):
+    low_raw = int(bar.low)
+    scale = PRICE_SCALE if low_raw > 10000000 else 100.0
+    low = low_raw / scale
+    open_price = (low_raw + int(bar.deltaOpen)) / scale
+    close_price = (low_raw + int(bar.deltaClose)) / scale
+    high_price = (low_raw + int(bar.deltaHigh)) / scale
+    timestamp = dt.datetime.fromtimestamp(
+        int(bar.utcTimestampInMinutes) * 60, tz=dt.timezone.utc
+    )
+    return {
+        "timestamp": timestamp.isoformat(),
+        "open": round(open_price, PRICE_DIGITS),
+        "high": round(high_price, PRICE_DIGITS),
+        "low": round(low, PRICE_DIGITS),
+        "close": round(close_price, PRICE_DIGITS),
+        "volume": float(bar.volume),
+    }
+
+
+def on_trendbars(result):
+    global m5_done
+    response = Protobuf.extract(result)
+    rows = [trendbar_to_row(bar) for bar in response.trendbar]
+    path = DATA_DIR / "data_m5.csv"
+
+    if rows:
+        df = (
+            pd.DataFrame(rows)
+            .drop_duplicates(subset=["timestamp"], keep="last")
+            .sort_values("timestamp")
+            .reset_index(drop=True)
+        )
+        df.to_csv(path, index=False)
+        print(
+            f"[M5] Saved {len(df):,} real M5 bars. "
+            f"Latest bar open: {df['timestamp'].iloc[-1]} | "
+            f"bar close: {df['close'].iloc[-1]:.{PRICE_DIGITS}f}"
+        )
+    else:
+        print("⚠️ WARNING: No M5 bars returned by cTrader.")
+
+    m5_done = True
+    maybe_finish()
+    return result
+
+
+def start_market_data_requests():
+    now = utc_now()
+    now_ms = int(now.timestamp() * 1000)
+
+    # 1. Subscribe to live spot events for instant BID/ASK quote
+    spot_req = ProtoOASubscribeSpotsReq()
+    spot_req.ctidTraderAccountId = ACCOUNT_ID
+    spot_req.symbolId.append(SYMBOL_ID)
+    spot_req.subscribeToSpotTimestamp = True
+    d_spot = client.send(spot_req, responseTimeoutInSeconds=20)
+    d_spot.addErrback(on_fatal_error)
+
+    # 2. Request latest 5 days (~1,440 bars) of M5 candles
+    bar_req = ProtoOAGetTrendbarsReq()
+    bar_req.ctidTraderAccountId = ACCOUNT_ID
+    bar_req.symbolId = SYMBOL_ID
+    bar_req.period = ProtoOATrendbarPeriod.M5
+    bar_req.fromTimestamp = int((now - dt.timedelta(days=5)).timestamp() * 1000)
+    bar_req.toTimestamp = now_ms
+    bar_req.count = 1800
+
+    d_bars = client.send(bar_req, responseTimeoutInSeconds=20)
+    d_bars.addCallback(on_trendbars)
+    d_bars.addErrback(on_fatal_error)
+
+
+def on_message_received(_client, message):
+    global quote_done, latest_spot_bid
+    if shutting_down:
+        return
+    try:
+        event = Protobuf.extract(message)
+    except Exception:
         return
 
-    chunk_to = min(current_from + CHUNK_MS, TO)
-    req = ProtoOAGetTrendbarsReq()
-    req.ctidTraderAccountId = ACCOUNT_ID
-    req.symbolId = SYMBOL_ID
-    req.period = ProtoOATrendbarPeriod.M5
-    req.fromTimestamp = current_from
-    req.toTimestamp = chunk_to
-    client.send(req)
-
-def connected(client):
-    req = ProtoOAApplicationAuthReq()
-    req.clientId = CTRADER_CLIENT_ID
-    req.clientSecret = CTRADER_CLIENT_SECRET
-    client.send(req)
-
-def received(client, message):
-    global current_from, total_inserted, download_error
-
-    if message.payloadType == ProtoOAApplicationAuthRes().payloadType:
-        req = ProtoOAAccountAuthReq()
-        req.ctidTraderAccountId = ACCOUNT_ID
-        req.accessToken = CTRADER_ACCESS_TOKEN
-        client.send(req)
+    if not isinstance(event, ProtoOASpotEvent):
+        return
+    if int(getattr(event, "symbolId", -1)) != SYMBOL_ID:
         return
 
-    if message.payloadType == ProtoOAAccountAuthRes().payloadType:
-        send_next_request()
+    bid_raw = int(getattr(event, "bid", 0) or 0)
+    ask_raw = int(getattr(event, "ask", 0) or 0)
+    close_raw = int(getattr(event, "sessionClose", 0) or 0)
+
+    def scale_val(raw):
+        if raw <= 0:
+            return None
+        s = PRICE_SCALE if raw > 10000000 else 100.0
+        return round(raw / s, PRICE_DIGITS)
+
+    bid = scale_val(bid_raw)
+    ask = scale_val(ask_raw)
+    session_close = scale_val(close_raw)
+
+    if bid is not None:
+        current_price, price_basis = bid, "bid"
+    elif ask is not None:
+        current_price, price_basis = ask, "ask_fallback"
+    elif session_close is not None:
+        current_price, price_basis = session_close, "session_close_fallback"
+    else:
         return
 
-    if message.payloadType == ProtoOAErrorRes().payloadType:
-        res = Protobuf.extract(message)
-        download_error = f"{getattr(res, 'errorCode', 'UNKNOWN')}: {getattr(res, 'description', '')}"
-        print(f"!!! API ERROR: {download_error}")
-        stop_client()
-        return
+    latest_spot_bid = current_price
+    payload = {
+        "status": "QUOTE_RECEIVED",
+        "symbol": symbol_name,
+        "symbol_id": SYMBOL_ID,
+        "current_price": current_price,
+        "price_basis": price_basis,
+        "bid": bid,
+        "ask": ask,
+        "received_at_utc": iso_utc(utc_now()),
+    }
+    write_json_atomic(DATA_DIR / "latest_quote.json", payload)
 
-    if message.payloadType == ProtoOAGetTrendbarsRes().payloadType:
-        res = Protobuf.extract(message)
-        trendbars = res.trendbar
-        
-        if getattr(res, "hasMore", False):
-            print("!!! RESPONSE LIMIT DETECTED !!!")
-            stop_client()
-            return
+    if not quote_done:
+        quote_done = True
+        bid_text = f"{bid:.{PRICE_DIGITS}f}" if bid is not None else "n/a"
+        ask_text = f"{ask:.{PRICE_DIGITS}f}" if ask is not None else "n/a"
+        print(f"[SPOT] {symbol_name} | BID={bid_text} | ASK={ask_text} | Live Price={current_price:.{PRICE_DIGITS}f}")
+        maybe_finish()
 
-        chunk_rows = []
-        for b in trendbars:
-            low_price = b.low / 100000.0
-            open_price = (b.low + b.deltaOpen) / 100000.0
-            high_price = (b.low + b.deltaHigh) / 100000.0
-            close_price = (b.low + b.deltaClose) / 100000.0
-            timestamp = datetime.fromtimestamp(b.utcTimestampInMinutes * 60, tz=timezone.utc)
-            
-            chunk_rows.append([timestamp, open_price, high_price, low_price, close_price, int(b.volume)])
 
-        if chunk_rows:
-            df = pd.DataFrame(chunk_rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
-            df = df.drop_duplicates(subset="timestamp").sort_values("timestamp")
-            
-            save_new_bars(df)
-            total_inserted += len(df)
+def disconnected(_client, _reason):
+    pass
 
-        chunk_to = min(current_from + CHUNK_MS, TO)
-        current_from = chunk_to + FIVE_MIN_MS
-        
-        if current_from > TO:
-            current_from = TO
-            
-        send_next_request()
 
-# ============================================================
-# 5. RUN REACTOR
-# ============================================================
-client.setConnectedCallback(connected)
-client.setMessageReceivedCallback(received)
+if __name__ == "__main__":
+    missing = [
+        name for name, value in [
+            ("CTRADER_CLIENT_ID", CLIENT_ID),
+            ("CTRADER_CLIENT_SECRET", CLIENT_SECRET),
+            ("CTRADER_ACCESS_TOKEN", ACCESS_TOKEN),
+            ("ACCOUNT_ID", ACCOUNT_ID),
+            ("SYMBOL_ID", SYMBOL_ID),
+        ] if not value
+    ]
+    if missing:
+        print("⚠️ Notice: Missing environment variable(s): " + ", ".join(missing))
+        sys.exit(0)
 
-print("Connecting to cTrader...")
-try:
+    write_json_atomic(
+        DATA_DIR / "latest_quote.json",
+        {
+            "status": "PENDING",
+            "symbol": symbol_name,
+            "symbol_id": SYMBOL_ID,
+            "current_price": None,
+            "received_at_utc": iso_utc(utc_now()),
+        },
+    )
+
+    timeout_call = reactor.callLater(40, on_timeout)
+    client.setConnectedCallback(connected)
+    client.setDisconnectedCallback(disconnected)
+    client.setMessageReceivedCallback(on_message_received)
     client.startService()
     reactor.run()
-except Exception as e:
-    print(f"Connection error: {e}")
-
-print(f"✓ AUTOMATED UPDATE COMPLETE. Total new bars: {total_inserted}")
