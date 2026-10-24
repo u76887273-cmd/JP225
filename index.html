@@ -1,533 +1,351 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>JP225 Quantum Live Engine</title>
-  <style>
-    :root {
-      --bg-main: #0b101e;
-      --bg-card: #121a2d;
-      --bg-inner: #172136;
-      --border-subtle: rgba(255, 255, 255, 0.08);
-      --cyan: #38bdf8;
-      --cyan-glow: rgba(56, 189, 248, 0.35);
-      --purple-badge: rgba(168, 85, 247, 0.18);
-      --purple-border: rgba(168, 85, 247, 0.45);
-      --purple-text: #d8b4fe;
-      --buy-bg: #102a2a;
-      --buy-border: rgba(16, 185, 129, 0.3);
-      --buy-text: #34d399;
-      --sell-bg: #2b1626;
-      --sell-border: rgba(244, 63, 94, 0.3);
-      --sell-text: #fb7185;
-      --text-main: #f8fafc;
-      --text-muted: #94a3b8;
-    }
-
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, monospace;
-    }
-
-    body {
-      background-color: var(--bg-main);
-      color: var(--text-main);
-      padding: 18px 14px 36px;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      min-height: 100vh;
-    }
-
-    .container {
-      width: 100%;
-      max-width: 440px;
-      display: flex;
-      flex-direction: column;
-      gap: 18px;
-    }
-
-    .card {
-      background: var(--bg-card);
-      border: 1px solid var(--border-subtle);
-      border-radius: 22px;
-      padding: 20px 18px;
-      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
-    }
-
-    .header-card {
-      text-align: center;
-      padding: 22px 18px;
-    }
-
-    .symbol-title {
-      font-size: 2.2rem;
-      font-weight: 900;
-      color: var(--cyan);
-      letter-spacing: 1.5px;
-      text-shadow: 0 0 18px var(--cyan-glow);
-      margin-bottom: 6px;
-    }
-
-    .conn-status {
-      font-size: 0.72rem;
-      font-family: monospace;
-      color: #34d399;
-      margin-bottom: 14px;
-    }
-
-    .header-metrics {
-      display: grid;
-      grid-template-columns: 1fr 1px 1fr;
-      align-items: center;
-    }
-
-    .divider-v {
-      width: 1px;
-      height: 44px;
-      background: var(--border-subtle);
-    }
-
-    .metric-label {
-      font-size: 0.72rem;
-      font-weight: 700;
-      letter-spacing: 1px;
-      color: var(--text-muted);
-      text-transform: uppercase;
-      margin-bottom: 6px;
-    }
-
-    .run-time {
-      font-size: 1.45rem;
-      font-weight: 800;
-      color: var(--text-main);
-      letter-spacing: 1px;
-    }
-
-    .live-price {
-      font-size: 1.95rem;
-      font-weight: 900;
-      color: #ffffff;
-      letter-spacing: 0.5px;
-    }
-
-    .tf-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding-bottom: 14px;
-      margin-bottom: 16px;
-      border-bottom: 1px solid var(--border-subtle);
-    }
-
-    .tf-badge-30m {
-      background: rgba(56, 189, 248, 0.14);
-      border: 1px solid rgba(56, 189, 248, 0.4);
-      color: var(--cyan);
-      font-size: 0.75rem;
-      font-weight: 800;
-      padding: 5px 12px;
-      border-radius: 999px;
-      letter-spacing: 0.6px;
-    }
-
-    .tf-badge-4h {
-      background: var(--purple-badge);
-      border: 1px solid var(--purple-border);
-      color: var(--purple-text);
-      font-size: 0.75rem;
-      font-weight: 800;
-      padding: 5px 12px;
-      border-radius: 999px;
-      letter-spacing: 0.6px;
-    }
-
-    .tf-stats {
-      font-size: 0.82rem;
-      font-weight: 600;
-      color: var(--text-muted);
-    }
-
-    .signal-box {
-      background: var(--bg-inner);
-      border: 1px solid var(--border-subtle);
-      border-radius: 16px;
-      padding: 22px 14px;
-      text-align: center;
-      margin-bottom: 14px;
-    }
-
-    .signal-subtitle {
-      font-size: 0.74rem;
-      font-weight: 700;
-      color: var(--text-muted);
-      letter-spacing: 1.2px;
-      text-transform: uppercase;
-      margin-bottom: 8px;
-    }
-
-    .signal-value {
-      font-size: 2.5rem;
-      font-weight: 900;
-      letter-spacing: 2px;
-      color: #cbd5e1;
-    }
-
-    .signal-BUY {
-      color: var(--buy-text);
-      text-shadow: 0 0 18px rgba(52, 211, 153, 0.4);
-    }
-
-    .signal-SELL {
-      color: var(--sell-text);
-      text-shadow: 0 0 18px rgba(251, 113, 133, 0.4);
-    }
-
-    .zone-box {
-      border-radius: 14px;
-      padding: 15px 12px;
-      text-align: center;
-      margin-bottom: 12px;
-    }
-
-    .zone-buy {
-      background: var(--buy-bg);
-      border: 1px solid var(--buy-border);
-    }
-
-    .zone-sell {
-      background: var(--sell-bg);
-      border: 1px solid var(--sell-border);
-    }
-
-    .zone-title-buy {
-      font-size: 0.73rem;
-      font-weight: 800;
-      color: var(--buy-text);
-      letter-spacing: 1px;
-      text-transform: uppercase;
-      margin-bottom: 6px;
-    }
-
-    .zone-title-sell {
-      font-size: 0.73rem;
-      font-weight: 800;
-      color: var(--sell-text);
-      letter-spacing: 1px;
-      text-transform: uppercase;
-      margin-bottom: 6px;
-    }
-
-    .zone-range {
-      font-size: 1.15rem;
-      font-weight: 800;
-      color: #ffffff;
-      letter-spacing: 0.6px;
-    }
-
-    .tp-section {
-      margin-top: 16px;
-      padding-top: 14px;
-      border-top: 1px solid var(--border-subtle);
-      text-align: center;
-    }
-
-    .tp-label {
-      font-size: 0.75rem;
-      font-weight: 800;
-      color: var(--cyan);
-      letter-spacing: 1px;
-      text-transform: uppercase;
-      margin-bottom: 10px;
-    }
-
-    .tp-box {
-      background: var(--bg-inner);
-      border: 1px solid var(--border-subtle);
-      border-radius: 14px;
-      padding: 16px;
-    }
-
-    .tp-value {
-      font-size: 2rem;
-      font-weight: 900;
-      color: var(--cyan);
-      text-shadow: 0 0 16px var(--cyan-glow);
-      letter-spacing: 1px;
-    }
-
-    .btn {
-      width: 100%;
-      border: none;
-      border-radius: 999px;
-      padding: 16px;
-      font-size: 1rem;
-      font-weight: 800;
-      color: #ffffff;
-      cursor: pointer;
-      transition: opacity 0.2s, transform 0.1s;
-    }
-
-    .btn:active {
-      transform: scale(0.98);
-    }
-
-    .btn-refresh {
-      background: linear-gradient(90deg, #0284c7, #0ea5e9);
-      box-shadow: 0 0 20px rgba(14, 165, 233, 0.35);
-    }
-
-    .btn-force {
-      background: linear-gradient(90deg, #d97706, #ea580c);
-      box-shadow: 0 0 20px rgba(234, 88, 12, 0.3);
-    }
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JP225 (30M & 4H)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #0f172a; color: #f8fafc; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+        .glass { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.1); }
+        .glow-text { text-shadow: 0 0 10px rgba(56, 189, 248, 0.5); }
+        .glow-green { text-shadow: 0 0 12px rgba(16, 185, 129, 0.6); }
+        .glow-red { text-shadow: 0 0 12px rgba(244, 63, 94, 0.6); }
+    </style>
 </head>
-<body>
+<body class="min-h-screen flex flex-col items-center p-4 sm:p-8">
 
-  <div class="container">
-    <div class="card header-card">
-      <div class="symbol-title">JP225</div>
-      <div class="conn-status" id="connection-status">Connecting to database...</div>
-      <div class="header-metrics">
-        <div>
-          <div class="metric-label">LATEST RUN</div>
-          <div class="run-time" id="latest-run">--:--</div>
+    <div class="max-w-5xl w-full">
+        <!-- Header + Latest Run Time (H:M) + Current Price -->
+        <div class="glass rounded-2xl p-5 mb-6 shadow-xl flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div class="text-center sm:text-left">
+                <h1 class="text-4xl font-extrabold text-sky-400 glow-text tracking-tight">JP225</h1>
+            </div>
+
+            <!-- Latest Run Time (H:M only) & Current Price -->
+            <div class="flex items-center gap-8 py-2 sm:py-0 sm:px-4">
+                <div class="text-center">
+                    <p class="text-[11px] text-slate-400 uppercase tracking-wide">Latest Run</p>
+                    <p id="time-val" class="text-xl font-mono font-semibold text-slate-200 mt-0.5">--:--</p>
+                </div>
+                <div class="text-center border-l border-slate-700 pl-8">
+                    <p class="text-[11px] text-slate-400 uppercase tracking-wide">Current Price</p>
+                    <p id="price-val" class="text-3xl font-mono font-bold text-white mt-0.5">--</p>
+                </div>
+            </div>
         </div>
-        <div class="divider-v"></div>
-        <div>
-          <div class="metric-label">CURRENT PRICE</div>
-          <div class="live-price" id="current-price">-----</div>
+
+        <!-- Dual Timeframe Grid (30M & 4H on One Screen) -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+            <!-- ================= 30-MINUTE (30M) ENGINE ================= -->
+            <div class="glass rounded-2xl p-6 shadow-2xl space-y-6">
+                <div class="flex items-center justify-between border-b border-slate-700 pb-4 gap-2">
+                    <span class="px-3 py-1 bg-sky-500/20 border border-sky-500/40 text-sky-400 rounded-lg text-xs font-bold uppercase tracking-wider">
+                        30-Minute (30M)
+                    </span>
+                    <div class="flex items-center gap-2">
+                        <span id="meta-val-30m" class="text-xs font-mono text-slate-400">RSI: -- | Bias: --</span>
+                        <span id="status-val-30m" class="hidden px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider"></span>
+                    </div>
+                </div>
+
+                <!-- Signal Area -->
+                <div class="text-center py-8 bg-slate-800/50 rounded-xl border border-slate-700">
+                    <p class="text-xs text-slate-400 uppercase tracking-widest mb-2">30M Final AI Signal</p>
+                    <h2 id="signal-val-30m" class="text-5xl font-extrabold tracking-tight text-white">WAIT</h2>
+                </div>
+
+                <!-- Trade Zones -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div class="bg-emerald-900/20 border border-emerald-800/50 rounded-xl p-4 text-center">
+                        <p class="text-xs text-emerald-400 uppercase tracking-wider mb-1">Buy Limits</p>
+                        <p id="buy-zone-30m" class="font-mono text-base font-semibold text-emerald-100">--</p>
+                    </div>
+                    <div class="bg-rose-900/20 border border-rose-800/50 rounded-xl p-4 text-center">
+                        <p class="text-xs text-rose-400 uppercase tracking-wider mb-1">Sell Limits</p>
+                        <p id="sell-zone-30m" class="font-mono text-base font-semibold text-rose-100">--</p>
+                    </div>
+                </div>
+
+                <!-- Equilibrium Target (TP) -->
+                <div class="text-center pt-4 border-t border-slate-700">
+                    <p class="text-xs text-sky-400 uppercase tracking-wider mb-3">30M Equilibrium Target (TP)</p>
+                    <div class="bg-slate-800/80 rounded-xl p-4 border border-slate-700 shadow-inner">
+                        <p id="tp-val-30m" class="font-mono text-3xl font-extrabold text-sky-400 glow-text">--</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ================= 4-HOUR (4H) ENGINE ================= -->
+            <div class="glass rounded-2xl p-6 shadow-2xl space-y-6">
+                <div class="flex items-center justify-between border-b border-slate-700 pb-4 gap-2">
+                    <span class="px-3 py-1 bg-purple-500/20 border border-purple-500/40 text-purple-300 rounded-lg text-xs font-bold uppercase tracking-wider">
+                        4-Hour (4H)
+                    </span>
+                    <div class="flex items-center gap-2">
+                        <span id="meta-val-4h" class="text-xs font-mono text-slate-400">RSI: -- | Bias: --</span>
+                        <span id="status-val-4h" class="hidden px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider"></span>
+                    </div>
+                </div>
+
+                <!-- Signal Area -->
+                <div class="text-center py-8 bg-slate-800/50 rounded-xl border border-slate-700">
+                    <p class="text-xs text-slate-400 uppercase tracking-widest mb-2">4H Final AI Signal</p>
+                    <h2 id="signal-val-4h" class="text-5xl font-extrabold tracking-tight text-white">WAIT</h2>
+                </div>
+
+                <!-- Trade Zones -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div class="bg-emerald-900/20 border border-emerald-800/50 rounded-xl p-4 text-center">
+                        <p class="text-xs text-emerald-400 uppercase tracking-wider mb-1">Buy Limits</p>
+                        <p id="buy-zone-4h" class="font-mono text-base font-semibold text-emerald-100">--</p>
+                    </div>
+                    <div class="bg-rose-900/20 border border-rose-800/50 rounded-xl p-4 text-center">
+                        <p class="text-xs text-rose-400 uppercase tracking-wider mb-1">Sell Limits</p>
+                        <p id="sell-zone-4h" class="font-mono text-base font-semibold text-rose-100">--</p>
+                    </div>
+                </div>
+
+                <!-- Equilibrium Target (TP) -->
+                <div class="text-center pt-4 border-t border-slate-700">
+                    <p class="text-xs text-sky-400 uppercase tracking-wider mb-3">4H Equilibrium Target (TP)</p>
+                    <div class="bg-slate-800/80 rounded-xl p-4 border border-slate-700 shadow-inner">
+                        <p id="tp-val-4h" class="font-mono text-3xl font-extrabold text-sky-400 glow-text">--</p>
+                    </div>
+                </div>
+            </div>
+
         </div>
-      </div>
+
+        <!-- Buttons Area -->
+        <div class="flex flex-col sm:flex-row justify-center gap-4 mt-8">
+            <button id="refresh-btn" onclick="fetchData(true)" class="px-6 py-3 bg-sky-600 hover:bg-sky-500 text-white rounded-full font-semibold transition-colors shadow-[0_0_15px_rgba(2,132,199,0.5)]">
+                Refresh Data
+            </button>
+
+            <!-- FORCE RUN BUTTON -->
+            <button id="force-btn" onclick="forceRun()" class="px-6 py-3 bg-amber-600 hover:bg-amber-500 text-white rounded-full font-semibold transition-colors shadow-[0_0_15px_rgba(217,119,6,0.5)] flex items-center justify-center gap-2">
+                <span>⚡ Force Engine Run</span>
+            </button>
+        </div>
     </div>
 
-    <div class="card">
-      <div class="tf-header">
-        <span class="tf-badge-30m">30-MINUTE (30M)</span>
-        <span class="tf-stats" id="stats-30m">RSI: -- | Bias: --%</span>
-      </div>
+    <script>
+        const SUPABASE_URL = "https://gtezyactopcdfeyiyrzz.supabase.co"; 
+        const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd0ZXp5YWN0b3BjZGZleWl5cnp6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE2ODE5MzcsImV4cCI6MjEwNzI1NzkzN30.o1lNY8NKe86xhTBxw0bzYGRYkZBigfyO2iE6f-Z5dJU";
 
-      <div class="signal-box">
-        <div class="signal-subtitle">30M FINAL AI SIGNAL</div>
-        <div class="signal-value" id="signal-30m">WAIT</div>
-      </div>
+        const GITHUB_USERNAME = window.location.hostname.includes("github.io") 
+            ? window.location.hostname.split(".")[0] 
+            : "u76887273-cmd";
 
-      <div class="zone-box zone-buy">
-        <div class="zone-title-buy">BUY LIMITS</div>
-        <div class="zone-range" id="buy-30m">----- - -----</div>
-      </div>
+        // Safely detect GitHub repo name without accidentally grabbing "index.html"
+        const pathSegment = window.location.pathname.split("/")[1] || "";
+        const GITHUB_REPO = (pathSegment && !pathSegment.endsWith(".html"))
+            ? pathSegment
+            : "JP225-Quantum";
 
-      <div class="zone-box zone-sell">
-        <div class="zone-title-sell">SELL LIMITS</div>
-        <div class="zone-range" id="sell-30m">----- - -----</div>
-      </div>
+        let latestKnownRunIso = null;
 
-      <div class="tp-section">
-        <div class="tp-label">30M EQUILIBRIUM TARGET (TP)</div>
-        <div class="tp-box">
-          <div class="tp-value" id="tp-30m">-----</div>
-        </div>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="tf-header">
-        <span class="tf-badge-4h">4-HOUR (4H)</span>
-        <span class="tf-stats" id="stats-4h">RSI: -- | Bias: --%</span>
-      </div>
-
-      <div class="signal-box">
-        <div class="signal-subtitle">4H FINAL AI SIGNAL</div>
-        <div class="signal-value" id="signal-4h">WAIT</div>
-      </div>
-
-      <div class="zone-box zone-buy">
-        <div class="zone-title-buy">BUY LIMITS</div>
-        <div class="zone-range" id="buy-4h">----- - -----</div>
-      </div>
-
-      <div class="zone-box zone-sell">
-        <div class="zone-title-sell">SELL LIMITS</div>
-        <div class="zone-range" id="sell-4h">----- - -----</div>
-      </div>
-
-      <div class="tp-section">
-        <div class="tp-label">4H EQUILIBRIUM TARGET (TP)</div>
-        <div class="tp-box">
-          <div class="tp-value" id="tp-4h">-----</div>
-        </div>
-      </div>
-    </div>
-
-    <button class="btn btn-refresh" onclick="fetchData()">Refresh Data</button>
-    <button class="btn btn-force" id="force-btn" onclick="forceRun()">⚡ Force Engine Run</button>
-  </div>
-
-  <script>
-    const SUPABASE_URL = "https://gtezyactopcdfeyiyrzz.supabase.co";
-    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd0ZXp5YWN0b3BjZGZleWl5cnp6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE2ODE5MzcsImV4cCI6MjEwNzI1NzkzN30.o1lNY8NKe86xhTBxw0bzYGRYkZBigfyO2iE6f-Z5dJU";
-
-    const GITHUB_USERNAME = "u76887273-cmd";
-    const GITHUB_REPO = "JP225-Quantum";
-
-    function parseReason(reasonStr) {
-      let rsi = "--";
-      let bias = "--%";
-      if (reasonStr) {
-        const rsiMatch = reasonStr.match(/RSI:\s*([\d.]+)/i);
-        const biasMatch = reasonStr.match(/Bias:\s*([\d.]+%?)/i);
-        if (rsiMatch) rsi = rsiMatch[1];
-        if (biasMatch) bias = biasMatch[1].includes("%") ? biasMatch[1] : biasMatch[1] + "%";
-      }
-      return `RSI: ${rsi} | Bias: ${bias}`;
-    }
-
-    function parseZones(entryZoneStr, signal) {
-      let buyZone = "WAITING";
-      let sellZone = "WAITING";
-      if (!entryZoneStr) return { buyZone, sellZone };
-
-      if (entryZoneStr.includes("|")) {
-        const parts = entryZoneStr.split("|").map(s => s.trim());
-        parts.forEach(p => {
-          if (p.startsWith("B:")) buyZone = p.replace("B:", "").trim();
-          if (p.startsWith("S:")) sellZone = p.replace("S:", "").trim();
-        });
-      } else if (signal === "BUY") {
-        buyZone = entryZoneStr;
-      } else if (signal === "SELL") {
-        sellZone = entryZoneStr;
-      }
-      return { buyZone, sellZone };
-    }
-
-    function renderCard(tf, row) {
-      if (!row) return;
-
-      const sigEl = document.getElementById(`signal-${tf}`);
-      const sig = (row.signal || "WAIT").toUpperCase();
-      sigEl.textContent = sig;
-      sigEl.className = `signal-value signal-${sig}`;
-
-      document.getElementById(`stats-${tf}`).textContent = parseReason(row.reason);
-
-      const { buyZone, sellZone } = parseZones(row.entry_zone, sig);
-      document.getElementById(`buy-${tf}`).textContent = buyZone;
-      document.getElementById(`sell-${tf}`).textContent = sellZone;
-
-      const tp = row.take_profit !== null && row.take_profit !== undefined
-        ? Number(row.take_profit).toFixed(0)
-        : "-----";
-      document.getElementById(`tp-${tf}`).textContent = tp;
-    }
-
-    async function fetchTableLatest(tableName) {
-      try {
-        const res = await fetch(`${SUPABASE_URL}/rest/v1/${tableName}?select=*&order=timestamp.desc&limit=1`, {
-          headers: {
-            "apikey": SUPABASE_ANON_KEY,
-            "Authorization": `Bearer ${SUPABASE_ANON_KEY}`
-          }
-        });
-        if (!res.ok) return null;
-        const data = await res.json();
-        return data && data.length > 0 ? data[0] : null;
-      } catch (e) {
-        return null;
-      }
-    }
-
-    async function fetchData() {
-      const statusEl = document.getElementById("connection-status");
-      statusEl.textContent = "Fetching latest signal...";
-      statusEl.style.color = "#facc15";
-
-      try {
-        const [row30m, row4h] = await Promise.all([
-          fetchTableLatest("supreme_grid_log"),
-          fetchTableLatest("supreme_grid_log_4h")
-        ]);
-
-        const primaryRow = row30m || row4h;
-        if (primaryRow) {
-          document.getElementById("current-price").textContent = Number(primaryRow.price).toFixed(0);
-          const dt = new Date(primaryRow.timestamp);
-          const hh = String(dt.getUTCHours()).padStart(2, "0");
-          const mm = String(dt.getUTCMinutes()).padStart(2, "0");
-          document.getElementById("latest-run").textContent = `${hh}:${mm}`;
-
-          renderCard("30m", row30m);
-          renderCard("4h", row4h);
-
-          statusEl.textContent = "Live Dashboard Active - Connected";
-          statusEl.style.color = "#34d399";
-        } else {
-          statusEl.textContent = "Connected - Waiting for first engine run";
-          statusEl.style.color = "#94a3b8";
-        }
-      } catch (error) {
-        console.error(error);
-        statusEl.textContent = "Error connecting to Supabase.";
-        statusEl.style.color = "#fb7185";
-      }
-    }
-
-    async function dispatchWorkflow(workflowFile, token) {
-      return fetch(`https://api.github.com/repos/${GITHUB_USERNAME}/${GITHUB_REPO}/actions/workflows/${workflowFile}/dispatches`, {
-        method: "POST",
-        headers: {
-          "Accept": "application/vnd.github+json",
-          "Authorization": `Bearer ${token}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ ref: "main" })
-      });
-    }
-
-    async function forceRun() {
-      let token = localStorage.getItem("github_pat");
-
-      if (!token) {
-        token = prompt("🔒 FIRST TIME SETUP:\n\nPlease paste your GitHub Token (ghp_...) here:");
-        if (!token) return;
-        localStorage.setItem("github_pat", token);
-      }
-
-      const statusEl = document.getElementById("connection-status");
-      statusEl.textContent = "Triggering Cloud Engine...";
-      statusEl.style.color = "#f59e0b";
-
-      try {
-        let response = await dispatchWorkflow("run-pipeline.yml", token);
-        if (response.status === 404) {
-          response = await dispatchWorkflow("pipeline.yml", token);
+        // Format any JP225 price number in a string to integer (0 decimals)
+        function formatPricesToInteger(str) {
+            if (!str) return "--";
+            return str.replace(/\b(\d+\.\d+)\b/g, (match) => Math.round(Number(match)).toString());
         }
 
-        if (response.ok || response.status === 204) {
-          alert("✅ JP225 Engine has been force-started!\n\nPlease wait about 45-60 seconds, then tap 'Refresh Data'.");
-          statusEl.textContent = "Live Dashboard Active - Connected";
-          statusEl.style.color = "#34d399";
-        } else {
-          const errData = await response.json();
-          if (response.status === 401 || response.status === 404) {
-            localStorage.removeItem("github_pat");
-            alert("❌ Token invalid or workflow file not found. Cleared token from memory.\n\nPlease tap the button to try again.");
-          } else {
-            alert("Error: " + (errData.message || "Failed to trigger workflow"));
-          }
-        }
-      } catch (error) {
-        console.error(error);
-        alert("Network error. Could not reach GitHub API.");
-      }
-    }
+        function renderTimeframeCard(tf, row) {
+            const sigEl = document.getElementById(`signal-val-${tf}`);
+            const signal = (row.signal || "WAIT").toUpperCase();
+            sigEl.innerText = signal;
 
-    fetchData();
-    setInterval(fetchData, 30000);
-  </script>
+            if (signal === "BUY") {
+                sigEl.className = "text-5xl font-extrabold tracking-tight text-emerald-400 glow-green";
+            } else if (signal === "SELL") {
+                sigEl.className = "text-5xl font-extrabold tracking-tight text-rose-400 glow-red";
+            } else {
+                sigEl.className = "text-5xl font-extrabold tracking-tight text-slate-300";
+            }
+
+            // Parse Bias, RSI, and EQ from reason string ("Bias:29.0% | RSI:51.8 | EQ:62578")
+            const rawReason = row.reason || "";
+            const eqMatch = rawReason.match(/EQ:\s*([0-9.]+)/i);
+            const rsiMatch = rawReason.match(/RSI:\s*([0-9.]+)/i);
+            const biasMatch = rawReason.match(/Bias:\s*([0-9.]+%?)/i);
+
+            const rsiText = rsiMatch ? Number(rsiMatch[1]).toFixed(1) : "--";
+            const biasText = biasMatch ? (biasMatch[1].endsWith("%") ? biasMatch[1] : `${biasMatch[1]}%`) : "--";
+            document.getElementById(`meta-val-${tf}`).innerText = `RSI: ${rsiText} | Bias: ${biasText}`;
+
+            // Render HIT_TP or ACTIVE badge for BUY/SELL signals
+            const statusEl = document.getElementById(`status-val-${tf}`);
+            if (row.status === "HIT_TP") {
+                statusEl.innerText = "HIT TP ✓";
+                statusEl.className = "px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-emerald-500/20 border border-emerald-500/40 text-emerald-300";
+            } else if (signal === "BUY" || signal === "SELL") {
+                statusEl.innerText = "ACTIVE";
+                statusEl.className = "px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-amber-500/20 border border-amber-500/40 text-amber-300";
+            } else {
+                statusEl.className = "hidden";
+            }
+
+            const eqValue = (row.take_profit !== null && row.take_profit !== undefined)
+                ? Number(row.take_profit)
+                : (eqMatch ? Number(eqMatch[1]) : null);
+            const eqFormatted = (eqValue !== null && !Number.isNaN(eqValue)) ? Math.round(eqValue).toString() : "--";
+
+            const zoneText = formatPricesToInteger(row.entry_zone || "-");
+            if (zoneText.includes("|")) {
+                const parts = zoneText.split("|");
+                document.getElementById(`buy-zone-${tf}`).innerText = parts[0].replace("B:", "").trim();
+                document.getElementById(`sell-zone-${tf}`).innerText = parts[1].replace("S:", "").trim();
+            } else if (signal === "BUY") {
+                document.getElementById(`buy-zone-${tf}`).innerText = zoneText;
+                document.getElementById(`sell-zone-${tf}`).innerText = "WAITING";
+            } else if (signal === "SELL") {
+                document.getElementById(`buy-zone-${tf}`).innerText = "WAITING";
+                document.getElementById(`sell-zone-${tf}`).innerText = zoneText;
+            } else {
+                document.getElementById(`buy-zone-${tf}`).innerText = zoneText;
+                document.getElementById(`sell-zone-${tf}`).innerText = zoneText;
+            }
+
+            document.getElementById(`tp-val-${tf}`).innerText = eqFormatted;
+        }
+
+        async function fetchTableLatest(tableName) {
+            const url = `${SUPABASE_URL}/rest/v1/${tableName}?select=*&order=id.desc&limit=1`;
+            const response = await fetch(url, {
+                cache: 'no-store',
+                headers: {
+                    'apikey': SUPABASE_ANON_KEY,
+                    'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+                }
+            });
+            if (!response.ok) {
+                const errText = await response.text();
+                throw new Error(`HTTP ${response.status}: ${errText}`);
+            }
+            return await response.json();
+        }
+
+        async function fetchData(isManual = false) {
+            const refreshBtn = document.getElementById("refresh-btn");
+            if (isManual && refreshBtn) {
+                refreshBtn.innerText = "Refreshing...";
+            }
+
+            try {
+                const [res30m, res4h] = await Promise.allSettled([
+                    fetchTableLatest("supreme_grid_log"),
+                    fetchTableLatest("supreme_grid_log_4h")
+                ]);
+
+                const data30m = res30m.status === "fulfilled" ? res30m.value : [];
+                const data4h = res4h.status === "fulfilled" ? res4h.value : [];
+
+                const row30 = data30m && data30m.length > 0 ? data30m[0] : null;
+                const row4h = data4h && data4h.length > 0 ? data4h[0] : null;
+
+                // Pick whichever row has the newest timestamp for the top header bar
+                const headerRow = row30 || row4h;
+                if (headerRow) {
+                    const rawTs = headerRow.created_at || headerRow.timestamp;
+                    latestKnownRunIso = rawTs;
+                    const runTime = new Date(rawTs);
+                    document.getElementById('time-val').innerText = runTime.toLocaleTimeString([], {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        hour12: false
+                    });
+                    document.getElementById('price-val').innerText = Math.round(Number(headerRow.price)).toString();
+                }
+
+                if (row30) renderTimeframeCard("30m", row30);
+                if (row4h) renderTimeframeCard("4h", row4h);
+            } catch (error) {
+                console.error("Supabase Error:", error);
+            } finally {
+                if (isManual && refreshBtn) {
+                    setTimeout(() => { refreshBtn.innerText = "Refresh Data"; }, 400);
+                }
+            }
+        }
+
+        async function forceRun() {
+            let token = localStorage.getItem("github_pat_jp225") || localStorage.getItem("github_pat_us30") || localStorage.getItem("github_pat");
+            
+            if (!token) {
+                token = prompt("🔒 FIRST TIME SETUP:\n\nPlease paste your GitHub Token (ghp_... or github_pat_...) here:");
+                if (!token) return; 
+                token = token.trim();
+                localStorage.setItem("github_pat_jp225", token); 
+            }
+
+            const btn = document.getElementById("force-btn");
+            const originalText = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = "<span>⏳ Triggering...</span>";
+
+            try {
+                // Checks run-pipeline.yml first (matching our new workflow), then fallbacks
+                const workflows = ["run-pipeline.yml", "main.yml", "pipeline.yml"];
+                let response = null;
+
+                for (const wf of workflows) {
+                    response = await fetch(`https://api.github.com/repos/${GITHUB_USERNAME}/${GITHUB_REPO}/actions/workflows/${wf}/dispatches`, {
+                        method: "POST",
+                        headers: {
+                            "Accept": "application/vnd.github+json",
+                            "Authorization": `Bearer ${token}`,
+                            "Content-Type": "application/json"
+                        },
+                        body: JSON.stringify({ ref: "main" }) 
+                    });
+                    if (response.status !== 404) break;
+                }
+
+                if (response && (response.ok || response.status === 204)) {
+                    const prevRunIso = latestKnownRunIso;
+                    let remaining = 35;
+
+                    // Live countdown & fast-polling until the new run finishes and writes to Supabase
+                    const pollTimer = setInterval(async () => {
+                        remaining -= 5;
+                        btn.innerHTML = `<span>⏳ Running Engine (${Math.max(remaining, 0)}s)...</span>`;
+                        await fetchData(false);
+
+                        if ((latestKnownRunIso && latestKnownRunIso !== prevRunIso) || remaining <= 0) {
+                            clearInterval(pollTimer);
+                            btn.innerHTML = "<span>✅ Updated!</span>";
+                            btn.disabled = false;
+                            setTimeout(() => { btn.innerHTML = originalText; }, 2500);
+                        }
+                    }, 5000);
+                } else {
+                    const errData = response ? await response.json().catch(() => ({})) : { message: "Workflow not found" };
+                    if (response && (response.status === 401 || response.status === 403)) {
+                        localStorage.removeItem("github_pat");
+                        localStorage.removeItem("github_pat_us30");
+                        localStorage.removeItem("github_pat_jp225");
+                        alert(`❌ Token unauthorized or expired for ${GITHUB_USERNAME}/${GITHUB_REPO}. Cleared from memory—click again to enter a new token.`);
+                    } else if (response && response.status === 404) {
+                        alert(`❌ Workflow file or repository (${GITHUB_USERNAME}/${GITHUB_REPO}) not found (HTTP 404). Make sure your token has 'repo' and 'workflow' permissions.`);
+                    } else {
+                        alert("Error: " + (errData.message || "Failed to trigger workflow."));
+                    }
+                    btn.innerHTML = originalText;
+                    btn.disabled = false;
+                }
+            } catch (error) {
+                console.error(error);
+                alert("Network error. Could not reach GitHub API.");
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            }
+        }
+
+        fetchData();
+        setInterval(() => fetchData(false), 30000);
+    </script>
 </body>
 </html>
