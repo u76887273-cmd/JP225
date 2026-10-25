@@ -9,7 +9,7 @@ import psycopg
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from train import build_features, FEATURES, ensure_unique_timestamp_constraint
+from train import build_features, train_horizon, FEATURES, HORIZONS, ensure_unique_timestamp_constraint
 
 DB_URL = os.environ.get("DATABASE_URL")
 RAW_BARS_TABLE = "features_m5"  # Matches your existing JP225 Supabase table
@@ -140,18 +140,19 @@ def init_db_table(conn, table_name):
                 price NUMERIC(10, 2) NOT NULL,
                 signal VARCHAR(16) NOT NULL,
                 reason TEXT,
-                entry_zone VARCHAR(64),
+                entry_zone VARCHAR(128),
                 entry NUMERIC(10, 2),
                 take_profit NUMERIC(10, 2),
                 status VARCHAR(32) DEFAULT 'ACTIVE',
                 created_at TIMESTAMPTZ DEFAULT NOW()
             );
+            ALTER TABLE {table_name} ALTER COLUMN entry_zone TYPE VARCHAR(128);
             ALTER TABLE {table_name} DROP CONSTRAINT IF EXISTS {table_name}_timestamp_key;
             GRANT SELECT ON {table_name} TO anon, authenticated;
         """)
     conn.commit()
 
-def send_telegram_alert(tf, signal, price_0d, entry_zone, eq_0d, rsi, stretch_pct):
+def send_telegram_alert(tf, signal, price_0d, entry_zone, eq_0d, rsi, bias_pct):
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not (bot_token and chat_id and signal in ["BUY", "SELL"]):
@@ -164,8 +165,8 @@ def send_telegram_alert(tf, signal, price_0d, entry_zone, eq_0d, rsi, stretch_pc
         f"{icon} *SIGNAL: {signal}*\n"
         f"💰 *Live Price:* {price_0d:.0f}\n"
         f"🏁 *Equilibrium TP:* {eq_0d:.0f}\n"
-        f"📍 *Limit Zone:* {entry_zone}\n"
-        f"📊 *Stretch:* {stretch_pct:.1f}% | *RSI:* {rsi:.1f}"
+        f"📍 *Limit Tiers:* {entry_zone}\n"
+        f"📊 *Bias:* {bias_pct:.1f}% | *RSI:* {rsi:.1f}"
     )
     try:
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -181,19 +182,24 @@ def predict_for_timeframe(conn, raw_df, tf, live_spot):
     table_name = TABLES[tf]
 
     if not os.path.exists(model_path):
-        print(f"[{tf.upper()}] Model file {model_path} missing.")
-        return
+        print(f"[{tf.upper()}] Model file {model_path} missing. Training now...")
+        train_horizon(raw_df, tf, HORIZONS[tf])
+
+    models = joblib.load(model_path)
+    expected_features = len(FEATURES)
+    actual_features = getattr(models["up"], "n_features_in_", expected_features)
+    if actual_features != expected_features:
+        print(f"[{tf.upper()}] Cached model has {actual_features} features (expected {expected_features}). Retraining...")
+        train_horizon(raw_df, tf, HORIZONS[tf])
+        models = joblib.load(model_path)
 
     df_feat = build_features(raw_df, tf).dropna(subset=FEATURES).reset_index(drop=True)
     if df_feat.empty:
         print(f"[{tf.upper()}] Not enough warmup bars to compute features (rows={len(raw_df)}).")
         return
 
-    models = joblib.load(model_path)
     latest_row = df_feat.iloc[[-1]]
-
-    model_features = list(getattr(models["up"], "feature_names_in_", FEATURES))
-    X_latest = latest_row[model_features]
+    X_latest = latest_row[FEATURES]
 
     price = float(live_spot) if live_spot is not None else float(latest_row["close"].iloc[0])
     rsi = float(latest_row["rsi"].iloc[0])
@@ -202,7 +208,6 @@ def predict_for_timeframe(conn, raw_df, tf, live_spot):
     pred_up = float(models["up"].predict(X_latest)[0])
     pred_down = float(models["down"].predict(X_latest)[0])
 
-    # Projected range anchored to structural EMA
     proj_high = anchor_ema + pred_up
     proj_low = anchor_ema - pred_down
     total_range = max(proj_high - proj_low, 10.0)
@@ -210,9 +215,9 @@ def predict_for_timeframe(conn, raw_df, tf, live_spot):
     midline_eq = (proj_high + proj_low) / 2.0
     half_range = total_range / 2.0
 
-    # 60% Distance Thresholds (0.60) for BOTH 30m and 4h
-    sell_trigger = midline_eq + (half_range * 0.60)
-    buy_trigger = midline_eq - (half_range * 0.60)
+    # 1. Updated 55% Distance Threshold (0.55) applied to BOTH 30m and 4h
+    sell_trigger = midline_eq + (half_range * 0.55)
+    buy_trigger = midline_eq - (half_range * 0.55)
 
     if price <= buy_trigger:
         signal = "BUY"
@@ -221,26 +226,28 @@ def predict_for_timeframe(conn, raw_df, tf, live_spot):
     else:
         signal = "WAIT"
 
-    zone_height = max(half_range * 0.20, 5.0)
-    buy_low = round(proj_low, 0)
-    buy_high = round(proj_low + zone_height, 0)
-    sell_low = round(proj_high - zone_height, 0)
-    sell_high = round(proj_high, 0)
+    # 2. Three Buy Tiers & Three Sell Tiers (0.55, 0.80, 1.00 of half_range from EQ)
+    b_055 = round(midline_eq - (half_range * 0.55), 0)
+    b_080 = round(midline_eq - (half_range * 0.80), 0)
+    b_100 = round(midline_eq - (half_range * 1.00), 0)  # Equals proj_low
+
+    s_055 = round(midline_eq + (half_range * 0.55), 0)
+    s_080 = round(midline_eq + (half_range * 0.80), 0)
+    s_100 = round(midline_eq + (half_range * 1.00), 0)  # Equals proj_high
 
     price_0d = round(price, 0)
     eq_0d = round(midline_eq, 0)
 
-    if signal == "BUY":
-        entry_zone = f"B: {buy_low:.0f} - {buy_high:.0f} | S: WAITING"
-    elif signal == "SELL":
-        entry_zone = f"B: WAITING | S: {sell_low:.0f} - {sell_high:.0f}"
-    else:
-        entry_zone = f"B: {buy_low:.0f} - {buy_high:.0f} | S: {sell_low:.0f} - {sell_high:.0f}"
+    entry_zone = (
+        f"B0.55:{b_055:.0f},B0.80:{b_080:.0f},B1.00:{b_100:.0f} | "
+        f"S0.55:{s_055:.0f},S0.80:{s_080:.0f},S1.00:{s_100:.0f}"
+    )
 
-    # True Stretch % from Equilibrium toward Upper/Lower Limit (60.0%+ triggers BUY/SELL)
-    stretch_pct = min((abs(price - midline_eq) / max(half_range, 1.0)) * 100.0, 100.0)
+    up_ratio = (pred_up / total_range) * 100.0
+    down_ratio = (pred_down / total_range) * 100.0
+    bias_pct = up_ratio if price < midline_eq else down_ratio
 
-    reason = f"Bias:{stretch_pct:.1f}% | RSI:{rsi:.1f}"
+    reason = f"Bias:{bias_pct:.1f}% | RSI:{rsi:.1f} | EQ:{eq_0d:.0f}"
     run_ts = datetime.datetime.now(datetime.timezone.utc)
 
     init_db_table(conn, table_name)
@@ -251,9 +258,13 @@ def predict_for_timeframe(conn, raw_df, tf, live_spot):
             VALUES (%s, %s, %s, %s, %s, %s, %s, 'ACTIVE')
         """, (run_ts, price_0d, signal, reason, entry_zone, price_0d, eq_0d))
     conn.commit()
-    print(f"[{tf.upper()}] {signal} @ {price_0d:.0f} (Spot: {price:.2f}) | AnchorEMA:{anchor_ema:.0f} | Buy<={buy_trigger:.0f} Sell>={sell_trigger:.0f} | EQ/TP: {eq_0d:.0f} | {reason}")
+    print(
+        f"[{tf.upper()}] {signal} @ {price_0d:.0f} (Spot: {price:.2f}) | AnchorEMA:{anchor_ema:.0f} | "
+        f"Buy(0.55/0.8/1.0): {b_055:.0f}/{b_080:.0f}/{b_100:.0f} | "
+        f"Sell(0.55/0.8/1.0): {s_055:.0f}/{s_080:.0f}/{s_100:.0f} | EQ/TP: {eq_0d:.0f}"
+    )
 
-    send_telegram_alert(tf, signal, price_0d, entry_zone, eq_0d, rsi, stretch_pct)
+    send_telegram_alert(tf, signal, price_0d, entry_zone, eq_0d, rsi, bias_pct)
 
 if __name__ == "__main__":
     live_spot = get_live_spot_quote()
