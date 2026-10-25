@@ -149,8 +149,8 @@ def build_features(df, tf_name="30m"):
 
     # Timeframe-specific Wilder's ATR
     high_low = df["high"] - df["low"]
-    high_close = (df["high"] - df["close"].shift()).abs()
-    low_close = (df["low"] - df["close"].shift()).abs()
+    high_close = (df["high"] - df["close"].shift(1)).abs()
+    low_close = (df["low"] - df["close"].shift(1)).abs()
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     df["atr"] = tr.ewm(alpha=1.0 / (14 * scale), adjust=False).mean()
 
@@ -159,8 +159,8 @@ def build_features(df, tf_name="30m"):
 
     # True Wilder's EWM RSI
     delta = df["close"].diff(1)
-    gain = delta.clip(lower=0).ewm(alpha=1.0 / (14 * scale), adjust=False).mean()
-    loss = (-delta.clip(upper=0)).ewm(alpha=1.0 / (14 * scale), adjust=False).mean()
+    gain = delta.clip(lower=0.0).ewm(alpha=1.0 / (14 * scale), min_periods=14 * scale, adjust=False).mean()
+    loss = (-delta.clip(upper=0.0)).ewm(alpha=1.0 / (14 * scale), min_periods=14 * scale, adjust=False).mean()
     rs = gain / (loss + 1e-9)
     df["rsi"] = 100.0 - (100.0 / (1.0 + rs))
 
@@ -171,7 +171,8 @@ def build_features(df, tf_name="30m"):
     df["vol_ratio"] = df["volume"] / (vol_ma + 1.0)
 
     # Cyclical UTC Session Time (captures Tokyo Open vs London/NY Sessions)
-    utc_hour = df["timestamp"].dt.hour + (df["timestamp"].dt.minute / 60.0)
+    ts_utc = parse_mixed_timestamps(df["timestamp"])
+    utc_hour = ts_utc.dt.hour + (ts_utc.dt.minute / 60.0)
     df["hour_sin"] = np.sin(2.0 * np.pi * utc_hour / 24.0)
     df["hour_cos"] = np.cos(2.0 * np.pi * utc_hour / 24.0)
 
@@ -193,10 +194,10 @@ def train_horizon(raw_df, tf_name, horizon_bars):
     X = df_valid[FEATURES]
 
     model_up = RandomForestRegressor(
-        n_estimators=120, max_depth=10, min_samples_leaf=20, random_state=42, n_jobs=-1
+        n_estimators=150, max_depth=10, min_samples_leaf=20, random_state=42, n_jobs=-1
     )
     model_down = RandomForestRegressor(
-        n_estimators=120, max_depth=10, min_samples_leaf=20, random_state=42, n_jobs=-1
+        n_estimators=150, max_depth=10, min_samples_leaf=20, random_state=42, n_jobs=-1
     )
 
     model_up.fit(X, df_valid["target_up"])
