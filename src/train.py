@@ -9,8 +9,8 @@ DB_URL = os.environ.get("DATABASE_URL")
 TABLE_NAME = "features_m5"  # Matches your existing JP225 Supabase table
 
 HORIZONS = {
-    "30m": 6,   # 6 x 5-min bars = 30 Minutes
-    "4h":  48   # 48 x 5-min bars = 4 Hours
+    "30m": 6,   # 6 x 5-min bars = 30 Minutes (scale = 1)
+    "4h":  48   # 48 x 5-min bars = 4 Hours   (scale = 8)
 }
 
 FEATURES = [
@@ -85,7 +85,7 @@ def sync_and_load_all_m5_bars():
                 new_bars = local_df[~local_df["timestamp"].isin(existing_ts)].copy()
 
                 if not new_bars.empty:
-                    print(f"🔄 Found {len(new_bars):,} new 5m bars in data_m5.csv! Syncing to '{TABLE_NAME}'...")
+                    print(f"🔄 Found {len(new_bars):,} new closed 5m bars in data_m5.csv! Syncing to '{TABLE_NAME}'...")
                     with psycopg.connect(DB_URL) as conn:
                         with conn.cursor() as cur:
                             insert_data = [
@@ -141,10 +141,11 @@ def sync_and_load_all_m5_bars():
 
 def build_features(df, tf_name="30m"):
     df = df.copy()
-    scale = 2 if tf_name == "30m" else 8
+    # Synchronized with 6-bar (30m -> scale=1) and 48-bar (4h -> scale=8) horizons
+    scale = 1 if tf_name == "30m" else 8
 
-    df["ema_fast"] = df["close"].ewm(span=12 * scale, adjust=False).mean()
-    df["ema_slow"] = df["close"].ewm(span=36 * scale, adjust=False).mean()
+    df["ema_fast"] = df["close"].ewm(span=20 * scale, adjust=False).mean()
+    df["ema_slow"] = df["close"].ewm(span=50 * scale, adjust=False).mean()
     df["ema_diff"] = df["ema_fast"] - df["ema_slow"]
 
     # Timeframe-specific Wilder's ATR
@@ -154,7 +155,7 @@ def build_features(df, tf_name="30m"):
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     df["atr"] = tr.ewm(alpha=1.0 / (14 * scale), adjust=False).mean()
 
-    # Rubber-band stretch of live price from structural EMA (normalized by ATR)
+    # Rubber-band stretch of price from structural EMA (normalized by ATR)
     df["ema_stretch"] = (df["close"] - df["ema_fast"]) / (df["atr"] + 1e-5)
 
     # True Wilder's EWM RSI
@@ -185,19 +186,19 @@ def train_horizon(raw_df, tf_name, horizon_bars):
     future_high = df["high"].shift(-1).rolling(window=indexer).max()
     future_low = df["low"].shift(-1).rolling(window=indexer).min()
 
-    # Anchored to structural EMA so train.py and predict.py match 100%
-    df["target_up"] = (future_high - df["ema_fast"]).clip(lower=1.0)
-    df["target_down"] = (df["ema_fast"] - future_low).clip(lower=1.0)
+    # Unclipped signed excursions from ema_fast so strong trends are not distorted
+    df["target_up"] = future_high - df["ema_fast"]
+    df["target_down"] = df["ema_fast"] - future_low
 
     # Exclude trailing horizon_bars rows where forward window is incomplete
     df_valid = df.iloc[:-horizon_bars].dropna(subset=FEATURES + ["target_up", "target_down"]).reset_index(drop=True)
     X = df_valid[FEATURES]
 
     model_up = RandomForestRegressor(
-        n_estimators=150, max_depth=10, min_samples_leaf=20, random_state=42, n_jobs=-1
+        n_estimators=150, max_depth=10, min_samples_leaf=25, random_state=42, n_jobs=-1
     )
     model_down = RandomForestRegressor(
-        n_estimators=150, max_depth=10, min_samples_leaf=20, random_state=42, n_jobs=-1
+        n_estimators=150, max_depth=10, min_samples_leaf=25, random_state=42, n_jobs=-1
     )
 
     model_up.fit(X, df_valid["target_up"])
