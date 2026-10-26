@@ -40,12 +40,20 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Normalize Script Locations
+      - name: Sync Root and src Script Locations
         run: |
           mkdir -p src
           for script in data.py train.py predict.py validator.py; do
-            if [ -f "$script" ] && [ ! -f "src/$script" ]; then
+            if [ -f "$script" ] && [ -f "src/$script" ]; then
+              if [ "$script" -nt "src/$script" ]; then
+                cp "$script" "src/$script"
+              else
+                cp "src/$script" "$script"
+              fi
+            elif [ -f "$script" ] && [ ! -f "src/$script" ]; then
               cp "$script" "src/$script"
+            elif [ -f "src/$script" ] && [ ! -f "$script" ]; then
+              cp "src/$script" "$script"
             fi
           done
 
@@ -94,16 +102,6 @@ jobs:
             git push origin HEAD:main || true
           else
             echo "⚡ Skipping training! JP225 models already trained today ($TODAY_UTC)."
-            python -c "
-          import os, psycopg
-          db_url = os.environ.get('DATABASE_URL')
-          if db_url:
-              with psycopg.connect(db_url) as conn:
-                  with conn.cursor() as cur:
-                      cur.execute('SELECT COUNT(*), MIN(timestamp), MAX(timestamp) FROM features_m5;')
-                      cnt, min_ts, max_ts = cur.fetchone()
-                      print(f'📊 JP225 Database Row Count (features_m5): {cnt:,} rows ({min_ts} --> {max_ts})')
-          "
           fi
 
       - name: 3. Run AI Prediction Engine
