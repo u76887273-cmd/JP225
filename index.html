@@ -192,11 +192,6 @@
 
         let latestKnownRunIso = null;
 
-        function formatPricesToInteger(str) {
-            if (!str) return "--";
-            return str.replace(/\b(\d+\.\d+)\b/g, (match) => Math.round(Number(match)).toString());
-        }
-
         function renderTimeframeCard(tf, row) {
             const sigEl = document.getElementById(`signal-val-${tf}`);
             const signal = (row.signal || "WAIT").toUpperCase();
@@ -217,7 +212,7 @@
 
             const rsiText = rsiMatch ? Number(rsiMatch[1]).toFixed(1) : "--";
             const biasText = biasMatch ? (biasMatch[1].endsWith("%") ? biasMatch[1] : `${biasMatch[1]}%`) : "--";
-            document.getElementById(`meta-val-${tf}`).innerText = `RSI: ${rsiText} | Bias: ${biasText}`;
+            document.getElementById(`meta-val-${tf}`).innerText = `RSI: ${rsiText} | Stretch: ${biasText}`;
 
             const statusEl = document.getElementById(`status-val-${tf}`);
             if (row.status === "HIT_TP" || row.status === "TP_HIT") {
