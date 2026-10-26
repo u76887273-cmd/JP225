@@ -9,7 +9,14 @@ import psycopg
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from train import build_features, train_horizon, FEATURES, HORIZONS, ensure_unique_timestamp_constraint
+from train import (
+    build_features,
+    train_horizon,
+    sync_and_load_all_m5_bars,
+    FEATURES,
+    HORIZONS,
+    ensure_unique_timestamp_constraint,
+)
 
 DB_URL = os.environ.get("DATABASE_URL")
 RAW_BARS_TABLE = "features_m5"  # Matches your existing JP225 Supabase table
@@ -39,7 +46,8 @@ def get_live_spot_quote():
             print(f"Note reading latest_quote.json: {e}")
     return None
 
-def sync_recent_bars_and_load_warmup(conn, live_spot):
+def sync_recent_bars_and_load_warmup(conn):
+    """Syncs pure closed M5 bars into Supabase without overwriting them with mid-bar live spot ticks."""
     ensure_unique_timestamp_constraint(conn)
     local_df = pd.DataFrame()
     if os.path.exists("data_m5.csv"):
@@ -52,14 +60,6 @@ def sync_recent_bars_and_load_warmup(conn, live_spot):
                     local_df[col] = pd.to_numeric(local_df[col], errors="coerce")
                 local_df["volume"] = pd.to_numeric(local_df.get("volume", 0.0), errors="coerce").fillna(0.0)
                 local_df = local_df.dropna(subset=["timestamp", "open", "high", "low", "close"]).sort_values("timestamp")
-
-                if live_spot is not None and not local_df.empty:
-                    idx = local_df.index[-1]
-                    local_df.loc[idx, "close"] = live_spot
-                    if live_spot > float(local_df.loc[idx, "high"]):
-                        local_df.loc[idx, "high"] = live_spot
-                    if live_spot < float(local_df.loc[idx, "low"]):
-                        local_df.loc[idx, "low"] = live_spot
 
                 recent_slice = local_df.tail(250)
                 with conn.cursor() as cur:
@@ -120,15 +120,6 @@ def sync_recent_bars_and_load_warmup(conn, live_spot):
         .tail(1500)
         .reset_index(drop=True)
     )
-
-    if live_spot is not None and not combined.empty:
-        idx = combined.index[-1]
-        combined.loc[idx, "close"] = live_spot
-        if live_spot > float(combined.loc[idx, "high"]):
-            combined.loc[idx, "high"] = live_spot
-        if live_spot < float(combined.loc[idx, "low"]):
-            combined.loc[idx, "low"] = live_spot
-
     return combined
 
 def init_db_table(conn, table_name):
@@ -152,7 +143,7 @@ def init_db_table(conn, table_name):
         """)
     conn.commit()
 
-def send_telegram_alert(tf, signal, price_0d, entry_zone, eq_0d, rsi, bias_pct):
+def send_telegram_alert(tf, signal, price_0d, entry_zone, eq_0d, rsi, stretch_pct):
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not (bot_token and chat_id and signal in ["BUY", "SELL"]):
@@ -166,7 +157,7 @@ def send_telegram_alert(tf, signal, price_0d, entry_zone, eq_0d, rsi, bias_pct):
         f"💰 *Live Price:* {price_0d:.0f}\n"
         f"🏁 *Equilibrium TP:* {eq_0d:.0f}\n"
         f"📍 *Limit Tiers:* {entry_zone}\n"
-        f"📊 *Bias:* {bias_pct:.1f}% | *RSI:* {rsi:.1f}"
+        f"📊 *Stretch:* {stretch_pct:.1f}% | *RSI:* {rsi:.1f}"
     )
     try:
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -182,17 +173,20 @@ def predict_for_timeframe(conn, raw_df, tf, live_spot):
     table_name = TABLES[tf]
 
     if not os.path.exists(model_path):
-        print(f"[{tf.upper()}] Model file {model_path} missing. Training now...")
-        train_horizon(raw_df, tf, HORIZONS[tf])
+        print(f"[{tf.upper()}] Model file {model_path} missing. Loading full dataset to train...")
+        full_df = sync_and_load_all_m5_bars()
+        train_horizon(full_df, tf, HORIZONS[tf])
 
     models = joblib.load(model_path)
     expected_features = len(FEATURES)
     actual_features = getattr(models["up"], "n_features_in_", expected_features)
     if actual_features != expected_features:
-        print(f"[{tf.upper()}] Cached model has {actual_features} features (expected {expected_features}). Retraining...")
-        train_horizon(raw_df, tf, HORIZONS[tf])
+        print(f"[{tf.upper()}] Cached model has {actual_features} features (expected {expected_features}). Retraining on full dataset...")
+        full_df = sync_and_load_all_m5_bars()
+        train_horizon(full_df, tf, HORIZONS[tf])
         models = joblib.load(model_path)
 
+    # Compute indicators on pure closed M5 bars (matching train.py 100%)
     df_feat = build_features(raw_df, tf).dropna(subset=FEATURES).reset_index(drop=True)
     if df_feat.empty:
         print(f"[{tf.upper()}] Not enough warmup bars to compute features (rows={len(raw_df)}).")
@@ -204,18 +198,25 @@ def predict_for_timeframe(conn, raw_df, tf, live_spot):
     price = float(live_spot) if live_spot is not None else float(latest_row["close"].iloc[0])
     rsi = float(latest_row["rsi"].iloc[0])
     anchor_ema = float(latest_row["ema_fast"].iloc[0])
+    atr_val = max(float(latest_row["atr"].iloc[0]), 5.0)
 
     pred_up = float(models["up"].predict(X_latest)[0])
     pred_down = float(models["down"].predict(X_latest)[0])
 
     proj_high = anchor_ema + pred_up
     proj_low = anchor_ema - pred_down
-    total_range = max(proj_high - proj_low, 10.0)
 
+    # Ensure structural projected range is valid even if signed excursion is tight
+    if proj_high - proj_low < atr_val:
+        mid_temp = (proj_high + proj_low) / 2.0
+        proj_high = mid_temp + (atr_val / 2.0)
+        proj_low = mid_temp - (atr_val / 2.0)
+
+    total_range = max(proj_high - proj_low, 10.0)
     midline_eq = (proj_high + proj_low) / 2.0
     half_range = total_range / 2.0
 
-    # 1. Updated 55% Distance Threshold (0.55) applied to BOTH 30m and 4h
+    # 1. 55% Distance Threshold (0.55) applied to BOTH 30m and 4h
     sell_trigger = midline_eq + (half_range * 0.55)
     buy_trigger = midline_eq - (half_range * 0.55)
 
@@ -243,11 +244,10 @@ def predict_for_timeframe(conn, raw_df, tf, live_spot):
         f"S0.55:{s_055:.0f},S0.80:{s_080:.0f},S1.00:{s_100:.0f}"
     )
 
-    up_ratio = (pred_up / total_range) * 100.0
-    down_ratio = (pred_down / total_range) * 100.0
-    bias_pct = up_ratio if price < midline_eq else down_ratio
+    # True Stretch % from Equilibrium toward outer limit (55.0%+ triggers BUY/SELL)
+    stretch_pct = min((abs(price - midline_eq) / max(half_range, 1.0)) * 100.0, 100.0)
 
-    reason = f"Bias:{bias_pct:.1f}% | RSI:{rsi:.1f} | EQ:{eq_0d:.0f}"
+    reason = f"Bias:{stretch_pct:.1f}% | RSI:{rsi:.1f} | EQ:{eq_0d:.0f}"
     run_ts = datetime.datetime.now(datetime.timezone.utc)
 
     init_db_table(conn, table_name)
@@ -261,14 +261,14 @@ def predict_for_timeframe(conn, raw_df, tf, live_spot):
     print(
         f"[{tf.upper()}] {signal} @ {price_0d:.0f} (Spot: {price:.2f}) | AnchorEMA:{anchor_ema:.0f} | "
         f"Buy(0.55/0.8/1.0): {b_055:.0f}/{b_080:.0f}/{b_100:.0f} | "
-        f"Sell(0.55/0.8/1.0): {s_055:.0f}/{s_080:.0f}/{s_100:.0f} | EQ/TP: {eq_0d:.0f}"
+        f"Sell(0.55/0.8/1.0): {s_055:.0f}/{s_080:.0f}/{s_100:.0f} | EQ/TP: {eq_0d:.0f} | Stretch: {stretch_pct:.1f}%"
     )
 
-    send_telegram_alert(tf, signal, price_0d, entry_zone, eq_0d, rsi, bias_pct)
+    send_telegram_alert(tf, signal, price_0d, entry_zone, eq_0d, rsi, stretch_pct)
 
 if __name__ == "__main__":
     live_spot = get_live_spot_quote()
     with psycopg.connect(DB_URL) as conn:
-        raw_df = sync_recent_bars_and_load_warmup(conn, live_spot)
+        raw_df = sync_recent_bars_and_load_warmup(conn)
         for tf in ["30m", "4h"]:
             predict_for_timeframe(conn, raw_df, tf, live_spot)
