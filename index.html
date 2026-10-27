@@ -45,7 +45,7 @@
                         30-Minute (30M)
                     </span>
                     <div class="flex items-center gap-2">
-                        <span id="meta-val-30m" class="text-xs font-mono text-slate-400">RSI: -- | Bias: --</span>
+                        <span id="meta-val-30m" class="text-xs font-mono text-slate-400">RSI: -- | Stretch: --</span>
                         <span id="status-val-30m" class="hidden px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider"></span>
                     </div>
                 </div>
@@ -119,7 +119,7 @@
                         4-Hour (4H)
                     </span>
                     <div class="flex items-center gap-2">
-                        <span id="meta-val-4h" class="text-xs font-mono text-slate-400">RSI: -- | Bias: --</span>
+                        <span id="meta-val-4h" class="text-xs font-mono text-slate-400">RSI: -- | Stretch: --</span>
                         <span id="status-val-4h" class="hidden px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider"></span>
                     </div>
                 </div>
@@ -178,8 +178,17 @@
     </div>
 
     <script>
-        const SUPABASE_URL = "https://gtezyactopcdfeyiyrzz.supabase.co"; 
-        const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd0ZXp5YWN0b3BjZGZleWl5cnp6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE2ODE5MzcsImV4cCI6MjEwNzI1NzkzN30.o1lNY8NKe86xhTBxw0bzYGRYkZBigfyO2iE6f-Z5dJU";
+        // Checks both your Supabase projects + live_state.json automatically
+        const SUPABASE_PROJECTS = [
+            {
+                url: "https://gtezyactopcdfeyiyrzz.supabase.co",
+                key: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd0ZXp5YWN0b3BjZGZleWl5cnp6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE2ODE5MzcsImV4cCI6MjEwNzI1NzkzN30.o1lNY8NKe86xhTBxw0bzYGRYkZBigfyO2iE6f-Z5dJU"
+            },
+            {
+                url: "https://nabjqvmgytcnlezyxnly.supabase.co",
+                key: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5hYmpxdm1neXRjbmxlenl4bmx5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA5MDg1MzcsImV4cCI6MjEwNjQ4NDUzN30.HRR0_Yu6xIUE7DAdqvPJlUOu37Gkz8xX6g4rsIVN98I"
+            }
+        ];
 
         const GITHUB_USERNAME = window.location.hostname.includes("github.io") 
             ? window.location.hostname.split(".")[0] 
@@ -193,6 +202,7 @@
         let latestKnownRunIso = null;
 
         function renderTimeframeCard(tf, row) {
+            if (!row) return;
             const sigEl = document.getElementById(`signal-val-${tf}`);
             const signal = (row.signal || "WAIT").toUpperCase();
             sigEl.innerText = signal;
@@ -208,21 +218,25 @@
             const rawReason = row.reason || "";
             const eqMatch = rawReason.match(/EQ:\s*([0-9.]+)/i);
             const rsiMatch = rawReason.match(/RSI:\s*([0-9.]+)/i);
-            const biasMatch = rawReason.match(/Bias:\s*([0-9.]+%?)/i);
+            const biasMatch = rawReason.match(/(?:Bias|Stretch):\s*([0-9.]+%?)/i);
 
-            const rsiText = rsiMatch ? Number(rsiMatch[1]).toFixed(1) : "--";
-            const biasText = biasMatch ? (biasMatch[1].endsWith("%") ? biasMatch[1] : `${biasMatch[1]}%`) : "--";
+            const rsiText = rsiMatch ? Number(rsiMatch[1]).toFixed(1) : (row.rsi !== undefined ? Number(row.rsi).toFixed(1) : "--");
+            const biasText = biasMatch
+                ? (biasMatch[1].endsWith("%") ? biasMatch[1] : `${biasMatch[1]}%`)
+                : (row.stretch_pct !== undefined ? `${Number(row.stretch_pct).toFixed(1)}%` : "--");
             document.getElementById(`meta-val-${tf}`).innerText = `RSI: ${rsiText} | Stretch: ${biasText}`;
 
             const statusEl = document.getElementById(`status-val-${tf}`);
-            if (row.status === "HIT_TP" || row.status === "TP_HIT") {
-                statusEl.innerText = "HIT TP ✓";
-                statusEl.className = "px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-emerald-500/20 border border-emerald-500/40 text-emerald-300";
-            } else if (signal === "BUY" || signal === "SELL") {
-                statusEl.innerText = "ACTIVE";
-                statusEl.className = "px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-amber-500/20 border border-amber-500/40 text-amber-300";
-            } else {
-                statusEl.className = "hidden";
+            if (statusEl) {
+                if (row.status === "HIT_TP" || row.status === "TP_HIT") {
+                    statusEl.innerText = "HIT TP ✓";
+                    statusEl.className = "px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-emerald-500/20 border border-emerald-500/40 text-emerald-300";
+                } else if (signal === "BUY" || signal === "SELL") {
+                    statusEl.innerText = "ACTIVE";
+                    statusEl.className = "px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-amber-500/20 border border-amber-500/40 text-amber-300";
+                } else {
+                    statusEl.className = "hidden";
+                }
             }
 
             const eqValue = (row.take_profit !== null && row.take_profit !== undefined)
@@ -277,19 +291,51 @@
         }
 
         async function fetchTableLatest(tableName) {
-            const url = `${SUPABASE_URL}/rest/v1/${tableName}?select=*&order=id.desc&limit=1`;
-            const response = await fetch(url, {
-                cache: 'no-store',
-                headers: {
-                    'apikey': SUPABASE_ANON_KEY,
-                    'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+            const orderings = ["timestamp.desc", "id.desc", "created_at.desc"];
+            for (const proj of SUPABASE_PROJECTS) {
+                for (const order of orderings) {
+                    try {
+                        const url = `${proj.url}/rest/v1/${tableName}?select=*&order=${order}&limit=1`;
+                        const response = await fetch(url, {
+                            cache: 'no-store',
+                            headers: {
+                                'apikey': proj.key,
+                                'Authorization': `Bearer ${proj.key}`
+                            }
+                        });
+                        if (response.ok) {
+                            const data = await response.json();
+                            if (Array.isArray(data) && data.length > 0) {
+                                return data[0];
+                            }
+                        }
+                    } catch (e) {
+                        // Try next ordering / project
+                    }
                 }
-            });
-            if (!response.ok) {
-                const errText = await response.text();
-                throw new Error(`HTTP ${response.status}: ${errText}`);
             }
-            return await response.json();
+            return null;
+        }
+
+        async function fetchJsonStateFallback() {
+            const urls = [
+                `./live_state.json?t=${Date.now()}`,
+                `https://raw.githubusercontent.com/${GITHUB_USERNAME}/${GITHUB_REPO}/main/live_state.json?t=${Date.now()}`
+            ];
+            for (const url of urls) {
+                try {
+                    const res = await fetch(url, { cache: "no-store" });
+                    if (res.ok) {
+                        const data = await res.json();
+                        if (data && (data["30m"] || data["4h"])) {
+                            return data;
+                        }
+                    }
+                } catch (e) {
+                    // Continue
+                }
+            }
+            return null;
         }
 
         async function fetchData(isManual = false) {
@@ -299,18 +345,125 @@
             }
 
             try {
-                const [res30m, res4h] = await Promise.allSettled([
+                const [row30Sb, row4hSb, jsonState] = await Promise.all([
                     fetchTableLatest("supreme_grid_log"),
-                    fetchTableLatest("supreme_grid_log_4h")
+                    fetchTableLatest("supreme_grid_log_4h"),
+                    fetchJsonStateFallback()
                 ]);
 
-                const data30m = res30m.status === "fulfilled" ? res30m.value : [];
-                const data4h = res4h.status === "fulfilled" ? res4h.value : [];
+                let row30 = row30Sb;
+                let row4h = row4hSb;
 
-                const row30 = data30m && data30m.length > 0 ? data30m[0] : null;
-                const row4h = data4h && data4h.length > 0 ? data4h[0] : null;
+                if (jsonState) {
+                    if (!row30 || (jsonState["30m"] && new Date(jsonState["30m"].timestamp) >= new Date(row30.timestamp || 0))) {
+                        row30 = jsonState["30m"];
+                    }
+                    if (!row4h || (jsonState["4h"] && new Date(jsonState["4h"].timestamp) >= new Date(row4h.timestamp || 0))) {
+                        row4h = jsonState["4h"];
+                    }
+                }
 
                 const headerRow = row30 || row4h;
                 if (headerRow) {
                     const rawTs = headerRow.created_at || headerRow.timestamp;
                     latestKnownRunIso = rawTs;
+                    const runTime = new Date(rawTs);
+                    document.getElementById('time-val').innerText = runTime.toLocaleTimeString([], {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        hour12: false
+                    });
+                    document.getElementById('price-val').innerText = Math.round(Number(headerRow.price)).toString();
+                }
+
+                if (row30) renderTimeframeCard("30m", row30);
+                if (row4h) renderTimeframeCard("4h", row4h);
+            } catch (error) {
+                console.error("Dashboard Fetch Error:", error);
+            } finally {
+                if (isManual && refreshBtn) {
+                    setTimeout(() => { refreshBtn.innerText = "Refresh Data"; }, 400);
+                }
+            }
+        }
+
+        async function forceRun() {
+            let token = localStorage.getItem("github_pat_jp225") || localStorage.getItem("github_pat_us30") || localStorage.getItem("github_pat");
+            
+            if (!token) {
+                token = prompt("🔒 FIRST TIME SETUP:\n\nPlease paste your GitHub Token (ghp_... or github_pat_...) here:");
+                if (!token) return; 
+                token = token.trim();
+                localStorage.setItem("github_pat_jp225", token); 
+            }
+
+            const btn = document.getElementById("force-btn");
+            const originalText = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = "<span>⏳ Triggering...</span>";
+
+            try {
+                const reposToTry = [GITHUB_REPO, "JP225-Quantum", "JP225"];
+                const workflows = ["run-pipeline.yml", "main.yml", "pipeline.yml"];
+                let response = null;
+
+                outerLoop:
+                for (const repoName of reposToTry) {
+                    for (const wf of workflows) {
+                        response = await fetch(`https://api.github.com/repos/${GITHUB_USERNAME}/${repoName}/actions/workflows/${wf}/dispatches`, {
+                            method: "POST",
+                            headers: {
+                                "Accept": "application/vnd.github+json",
+                                "Authorization": `Bearer ${token}`,
+                                "Content-Type": "application/json"
+                            },
+                            body: JSON.stringify({ ref: "main" }) 
+                        });
+                        if (response.ok || response.status === 204 || response.status === 401 || response.status === 403) {
+                            break outerLoop;
+                        }
+                    }
+                }
+
+                if (response && (response.ok || response.status === 204)) {
+                    const prevRunIso = latestKnownRunIso;
+                    let remaining = 45;
+
+                    const pollTimer = setInterval(async () => {
+                        remaining -= 5;
+                        btn.innerHTML = `<span>⏳ Running Engine (${Math.max(remaining, 0)}s)...</span>`;
+                        await fetchData(false);
+
+                        if ((latestKnownRunIso && latestKnownRunIso !== prevRunIso) || remaining <= 0) {
+                            clearInterval(pollTimer);
+                            btn.innerHTML = "<span>✅ Updated!</span>";
+                            btn.disabled = false;
+                            setTimeout(() => { btn.innerHTML = originalText; }, 2500);
+                        }
+                    }, 5000);
+                } else {
+                    const errData = response ? await response.json().catch(() => ({})) : { message: "Workflow not found" };
+                    if (response && (response.status === 401 || response.status === 403)) {
+                        localStorage.removeItem("github_pat");
+                        localStorage.removeItem("github_pat_us30");
+                        localStorage.removeItem("github_pat_jp225");
+                        alert(`❌ Token unauthorized or expired. Cleared from memory—click again to enter a new token.`);
+                    } else {
+                        alert("Error: " + (errData.message || "Failed to trigger workflow."));
+                    }
+                    btn.innerHTML = originalText;
+                    btn.disabled = false;
+                }
+            } catch (error) {
+                console.error(error);
+                alert("Network error. Could not reach GitHub API.");
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            }
+        }
+
+        fetchData();
+        setInterval(() => fetchData(false), 30000);
+    </script>
+</body>
+</html>
