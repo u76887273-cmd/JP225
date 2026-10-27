@@ -35,7 +35,7 @@
             </div>
         </div>
 
-        <!-- Dual Timeframe Grid (30M & 4H on One Screen) -->
+        <!-- Dual Timeframe Grid (30M -> Buttons in the Middle -> 4H) -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
 
             <!-- ================= 30-MINUTE (30M) ENGINE ================= -->
@@ -100,6 +100,18 @@
                 </div>
             </div>
 
+            <!-- ================= MIDDLE BUTTONS AREA (BETWEEN 30M & 4H) ================= -->
+            <div class="lg:col-span-2 flex flex-col sm:flex-row justify-center gap-4 py-1">
+                <button id="refresh-btn" onclick="fetchData(true)" class="px-6 py-3 bg-sky-600 hover:bg-sky-500 text-white rounded-full font-semibold transition-colors shadow-[0_0_15px_rgba(2,132,199,0.5)]">
+                    Refresh Data
+                </button>
+
+                <!-- FORCE RUN BUTTON -->
+                <button id="force-btn" onclick="forceRun()" class="px-6 py-3 bg-amber-600 hover:bg-amber-500 text-white rounded-full font-semibold transition-colors shadow-[0_0_15px_rgba(217,119,6,0.5)] flex items-center justify-center gap-2">
+                    <span>⚡ Force Engine Run</span>
+                </button>
+            </div>
+
             <!-- ================= 4-HOUR (4H) ENGINE ================= -->
             <div class="glass rounded-2xl p-6 shadow-2xl space-y-6">
                 <div class="flex items-center justify-between border-b border-slate-700 pb-4 gap-2">
@@ -162,18 +174,6 @@
                 </div>
             </div>
 
-        </div>
-
-        <!-- Buttons Area -->
-        <div class="flex flex-col sm:flex-row justify-center gap-4 mt-8">
-            <button id="refresh-btn" onclick="fetchData(true)" class="px-6 py-3 bg-sky-600 hover:bg-sky-500 text-white rounded-full font-semibold transition-colors shadow-[0_0_15px_rgba(2,132,199,0.5)]">
-                Refresh Data
-            </button>
-
-            <!-- FORCE RUN BUTTON -->
-            <button id="force-btn" onclick="forceRun()" class="px-6 py-3 bg-amber-600 hover:bg-amber-500 text-white rounded-full font-semibold transition-colors shadow-[0_0_15px_rgba(217,119,6,0.5)] flex items-center justify-center gap-2">
-                <span>⚡ Force Engine Run</span>
-            </button>
         </div>
     </div>
 
@@ -314,99 +314,3 @@
                 if (headerRow) {
                     const rawTs = headerRow.created_at || headerRow.timestamp;
                     latestKnownRunIso = rawTs;
-                    const runTime = new Date(rawTs);
-                    document.getElementById('time-val').innerText = runTime.toLocaleTimeString([], {
-                        hour: '2-digit',
-                        minute: '2-digit',
-                        hour12: false
-                    });
-                    document.getElementById('price-val').innerText = Math.round(Number(headerRow.price)).toString();
-                }
-
-                if (row30) renderTimeframeCard("30m", row30);
-                if (row4h) renderTimeframeCard("4h", row4h);
-            } catch (error) {
-                console.error("Supabase Error:", error);
-            } finally {
-                if (isManual && refreshBtn) {
-                    setTimeout(() => { refreshBtn.innerText = "Refresh Data"; }, 400);
-                }
-            }
-        }
-
-        async function forceRun() {
-            let token = localStorage.getItem("github_pat_jp225") || localStorage.getItem("github_pat_us30") || localStorage.getItem("github_pat");
-            
-            if (!token) {
-                token = prompt("🔒 FIRST TIME SETUP:\n\nPlease paste your GitHub Token (ghp_... or github_pat_...) here:");
-                if (!token) return; 
-                token = token.trim();
-                localStorage.setItem("github_pat_jp225", token); 
-            }
-
-            const btn = document.getElementById("force-btn");
-            const originalText = btn.innerHTML;
-            btn.disabled = true;
-            btn.innerHTML = "<span>⏳ Triggering...</span>";
-
-            try {
-                const workflows = ["run-pipeline.yml", "main.yml", "pipeline.yml"];
-                let response = null;
-
-                for (const wf of workflows) {
-                    response = await fetch(`https://api.github.com/repos/${GITHUB_USERNAME}/${GITHUB_REPO}/actions/workflows/${wf}/dispatches`, {
-                        method: "POST",
-                        headers: {
-                            "Accept": "application/vnd.github+json",
-                            "Authorization": `Bearer ${token}`,
-                            "Content-Type": "application/json"
-                        },
-                        body: JSON.stringify({ ref: "main" }) 
-                    });
-                    if (response.status !== 404) break;
-                }
-
-                if (response && (response.ok || response.status === 204)) {
-                    const prevRunIso = latestKnownRunIso;
-                    let remaining = 35;
-
-                    const pollTimer = setInterval(async () => {
-                        remaining -= 5;
-                        btn.innerHTML = `<span>⏳ Running Engine (${Math.max(remaining, 0)}s)...</span>`;
-                        await fetchData(false);
-
-                        if ((latestKnownRunIso && latestKnownRunIso !== prevRunIso) || remaining <= 0) {
-                            clearInterval(pollTimer);
-                            btn.innerHTML = "<span>✅ Updated!</span>";
-                            btn.disabled = false;
-                            setTimeout(() => { btn.innerHTML = originalText; }, 2500);
-                        }
-                    }, 5000);
-                } else {
-                    const errData = response ? await response.json().catch(() => ({})) : { message: "Workflow not found" };
-                    if (response && (response.status === 401 || response.status === 403)) {
-                        localStorage.removeItem("github_pat");
-                        localStorage.removeItem("github_pat_us30");
-                        localStorage.removeItem("github_pat_jp225");
-                        alert(`❌ Token unauthorized or expired for ${GITHUB_USERNAME}/${GITHUB_REPO}. Cleared from memory—click again to enter a new token.`);
-                    } else if (response && response.status === 404) {
-                        alert(`❌ Workflow file or repository (${GITHUB_USERNAME}/${GITHUB_REPO}) not found (HTTP 404). Make sure your token has 'repo' and 'workflow' permissions.`);
-                    } else {
-                        alert("Error: " + (errData.message || "Failed to trigger workflow."));
-                    }
-                    btn.innerHTML = originalText;
-                    btn.disabled = false;
-                }
-            } catch (error) {
-                console.error(error);
-                alert("Network error. Could not reach GitHub API.");
-                btn.innerHTML = originalText;
-                btn.disabled = false;
-            }
-        }
-
-        fetchData();
-        setInterval(() => fetchData(false), 30000);
-    </script>
-</body>
-</html>
