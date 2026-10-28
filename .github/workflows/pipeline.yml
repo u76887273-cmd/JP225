@@ -111,4 +111,6 @@ jobs:
         run: python src/validator.py
 
       - name: Analyze Quiet Hours
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python src/quiet_hours.py
