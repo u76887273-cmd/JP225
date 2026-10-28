@@ -1,37 +1,77 @@
 import os
+import sys
 import psycopg
 import pandas as pd
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 DB_URL = os.environ.get("DATABASE_URL")
-CANDIDATE_TABLES = ["m5_bars", "jp225_m5_bars", "raw_m5_bars", "bars_m5"]
 
 def load_bars():
-    if DB_URL:
-        with psycopg.connect(DB_URL) as conn:
-            with conn.cursor() as cur:
-                for table in CANDIDATE_TABLES:
-                    try:
-                        cur.execute(f"SELECT timestamp, high, low FROM {table} ORDER BY timestamp ASC;")
-                        rows = cur.fetchall()
-                        if rows:
-                            print(f"Loaded {len(rows):,} JP225 bars from '{table}'")
-                            df = pd.DataFrame(rows, columns=["timestamp", "high", "low"])
-                            break
-                    except Exception:
-                        conn.rollback()
-                        continue
-                else:
-                    raise RuntimeError("Could not find M5 bars table in Supabase.")
-    elif os.path.exists("data_m5.csv"):
-        df = pd.read_csv("data_m5.csv")[["timestamp", "high", "low"]]
-    else:
-        raise FileNotFoundError("Provide DATABASE_URL or data_m5.csv")
+    df = pd.DataFrame()
 
+    # 1. Try using train.py's built-in loader first (matches your repo's exact table & CSV logic)
+    try:
+        from train import sync_and_load_all_m5_bars
+        df = sync_and_load_all_m5_bars()
+        if df is not None and not df.empty:
+            print(f"Loaded {len(df):,} JP225 bars via train.sync_and_load_all_m5_bars()")
+    except Exception as e:
+        print(f"Note on train loader: {e}")
+
+    # 2. If still empty and DATABASE_URL is available, auto-discover the OHLC table in Supabase
+    if (df is None or df.empty) and DB_URL:
+        try:
+            with psycopg.connect(DB_URL) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT table_name
+                        FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                          AND column_name IN ('timestamp', 'high', 'low')
+                        GROUP BY table_name
+                        HAVING COUNT(DISTINCT column_name) = 3;
+                    """)
+                    tables = [r[0] for r in cur.fetchall()]
+                    print(f"Discovered OHLC tables in DB: {tables}")
+
+                    best_rows = []
+                    best_table = None
+                    for t in tables:
+                        cur.execute(f"SELECT timestamp, high, low FROM {t} ORDER BY timestamp ASC;")
+                        rows = cur.fetchall()
+                        if len(rows) > len(best_rows):
+                            best_rows = rows
+                            best_table = t
+
+                    if best_rows:
+                        print(f"Loaded {len(best_rows):,} bars from '{best_table}'")
+                        df = pd.DataFrame(best_rows, columns=["timestamp", "high", "low"])
+        except Exception as e:
+            print(f"Note on DB auto-discovery: {e}")
+
+    # 3. Always also check local CSV files and combine so no bars are missed
+    for csv_path in ["data_m5.csv", "src/data_m5.csv", "jp225_m5.csv"]:
+        if os.path.exists(csv_path):
+            try:
+                csv_df = pd.read_csv(csv_path)
+                csv_df.columns = [c.lower() for c in csv_df.columns]
+                if {"timestamp", "high", "low"}.issubset(csv_df.columns):
+                    print(f"Loaded {len(csv_df):,} bars from local '{csv_path}'")
+                    df = pd.concat([df, csv_df[["timestamp", "high", "low"]]], ignore_index=True)
+            except Exception as e:
+                print(f"Note reading {csv_path}: {e}")
+
+    if df is None or df.empty:
+        raise RuntimeError("No bars found in DB or CSV. Make sure DATABASE_URL is passed in workflow env.")
+
+    df.columns = [c.lower() for c in df.columns]
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
     for col in ["high", "low"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
+
     return (
-        df.dropna()
+        df.dropna(subset=["timestamp", "high", "low"])
         .drop_duplicates(subset=["timestamp"], keep="last")
         .sort_values("timestamp")
         .reset_index(drop=True)
