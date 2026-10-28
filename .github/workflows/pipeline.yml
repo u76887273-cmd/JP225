@@ -109,3 +109,6 @@ jobs:
 
       - name: 4. Run Grid State Validator
         run: python src/validator.py
+
+      - name: Analyze Quiet Hours
+        run: python src/quiet_hours.py
