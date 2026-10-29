@@ -91,11 +91,19 @@
                     </div>
                 </div>
 
-                <!-- Equilibrium Target (TP) -->
-                <div class="text-center pt-4 border-t border-slate-700">
-                    <p class="text-xs text-sky-400 uppercase tracking-wider mb-3">30M Equilibrium Target (TP)</p>
-                    <div class="bg-slate-800/80 rounded-xl p-4 border border-slate-700 shadow-inner">
-                        <p id="tp-val-30m" class="font-mono text-3xl font-extrabold text-sky-400 glow-text">--</p>
+                <!-- Midline & EMA Side-by-Side -->
+                <div class="grid grid-cols-2 gap-4 pt-4 border-t border-slate-700 text-center">
+                    <div>
+                        <p class="text-xs text-sky-400 uppercase tracking-wider mb-3 font-semibold">Midline</p>
+                        <div class="bg-slate-800/80 rounded-xl p-4 border border-slate-700 shadow-inner">
+                            <p id="tp-val-30m" class="font-mono text-2xl sm:text-3xl font-extrabold text-sky-400 glow-text">--</p>
+                        </div>
+                    </div>
+                    <div>
+                        <p class="text-xs text-amber-400 uppercase tracking-wider mb-3 font-semibold">EMA</p>
+                        <div class="bg-slate-800/80 rounded-xl p-4 border border-slate-700 shadow-inner">
+                            <p id="ema-val-30m" class="font-mono text-2xl sm:text-3xl font-extrabold text-amber-300">--</p>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -165,11 +173,19 @@
                     </div>
                 </div>
 
-                <!-- Equilibrium Target (TP) -->
-                <div class="text-center pt-4 border-t border-slate-700">
-                    <p class="text-xs text-sky-400 uppercase tracking-wider mb-3">4H Equilibrium Target (TP)</p>
-                    <div class="bg-slate-800/80 rounded-xl p-4 border border-slate-700 shadow-inner">
-                        <p id="tp-val-4h" class="font-mono text-3xl font-extrabold text-sky-400 glow-text">--</p>
+                <!-- Midline & EMA Side-by-Side -->
+                <div class="grid grid-cols-2 gap-4 pt-4 border-t border-slate-700 text-center">
+                    <div>
+                        <p class="text-xs text-sky-400 uppercase tracking-wider mb-3 font-semibold">Midline</p>
+                        <div class="bg-slate-800/80 rounded-xl p-4 border border-slate-700 shadow-inner">
+                            <p id="tp-val-4h" class="font-mono text-2xl sm:text-3xl font-extrabold text-sky-400 glow-text">--</p>
+                        </div>
+                    </div>
+                    <div>
+                        <p class="text-xs text-amber-400 uppercase tracking-wider mb-3 font-semibold">EMA</p>
+                        <div class="bg-slate-800/80 rounded-xl p-4 border border-slate-700 shadow-inner">
+                            <p id="ema-val-4h" class="font-mono text-2xl sm:text-3xl font-extrabold text-amber-300">--</p>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -217,6 +233,7 @@
 
             const rawReason = row.reason || "";
             const eqMatch = rawReason.match(/EQ:\s*([0-9.]+)/i);
+            const emaMatch = rawReason.match(/EMA:\s*([0-9.]+)/i);
             const rsiMatch = rawReason.match(/RSI:\s*([0-9.]+)/i);
             const biasMatch = rawReason.match(/(?:Bias|Stretch):\s*([0-9.]+%?)/i);
 
@@ -243,6 +260,11 @@
                 ? Number(row.take_profit)
                 : (eqMatch ? Number(eqMatch[1]) : null);
             const eqFormatted = (eqValue !== null && !Number.isNaN(eqValue)) ? Math.round(eqValue).toString() : "--";
+
+            const emaValue = (row.ema !== null && row.ema !== undefined)
+                ? Number(row.ema)
+                : (emaMatch ? Number(emaMatch[1]) : null);
+            const emaFormatted = (emaValue !== null && !Number.isNaN(emaValue)) ? Math.round(emaValue).toString() : "--";
 
             const zoneText = row.entry_zone || "";
             const extractTier = (prefix) => {
@@ -288,6 +310,7 @@
             document.getElementById(`sell-100-${tf}`).innerText = s100 || "--";
 
             document.getElementById(`tp-val-${tf}`).innerText = eqFormatted;
+            document.getElementById(`ema-val-${tf}`).innerText = emaFormatted;
         }
 
         async function fetchTableLatest(tableName) {
